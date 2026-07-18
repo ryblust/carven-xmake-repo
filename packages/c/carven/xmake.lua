@@ -3,18 +3,36 @@ package("carven")
     set_homepage("https://github.com/ryblust/carven")
     set_description("The Carven language transpiler")
 
-    local sourcedir = os.getenv("CARVEN_SOURCE_DIR")
+    add_configs("rules_only", {
+        description = "Install only the Carven xmake rules",
+        default = false,
+        type = "boolean",
+    })
 
-    if sourcedir and #sourcedir > 0 then
-        set_sourcedir(sourcedir) -- for local development
-    else
-        set_urls("https://github.com/ryblust/carven.git")
-    end
+    on_source(function (package)
+        if not package:config("rules_only") then
+            local carven_source_dir = os.getenv("CARVEN_SOURCE_DIR")
+            if carven_source_dir and #carven_source_dir > 0 then
+                carven_source_dir = path.absolute(carven_source_dir, os.projectdir())
+                package:set("sourcedir", carven_source_dir)
+            else
+                package:add("urls", "https://github.com/ryblust/carven.git")
+            end
+        end
+    end)
 
     on_install(function (package)
-        import("package.tools.xmake").install(package, {kind = "binary"}, {target = "carven"})
+        if not package:config("rules_only") then
+            import("package.tools.xmake").install(
+                package,
+                {kind = "binary", build_tests = false},
+                {target = "carven"}
+            )
+        end
     end)
 
     on_test(function (package)
-        os.vrunv("carven", {"--version"})
+        if not package:config("rules_only") then
+            os.vrunv("carven", {"--version"})
+        end
     end)
