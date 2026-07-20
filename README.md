@@ -12,8 +12,22 @@ target("app")
     set_kind("binary")
     add_packages("carven")
     add_rules("@carven/carven")
-    add_files("src/*.cv")
+    add_files("main.cv")
 ```
+
+The rule passes every target `.cv` input to one deterministic Carven
+invocation before compiling any generated C++. Source paths are relative to the
+configured work directory and mirrored below xmake's target autogeneration
+directory. A root-level `main.cv` generates `<autogendir>/main.cpp`, while
+`src/app/main.cv` generates `<autogendir>/src/app/main.cpp`. Generated headers
+are resolved through `<autogendir>`; input source directories are not added as
+C++ include directories. Generated `.cpp` files are registered as ordinary
+xmake C++ sources, so xmake owns compiler dependency scanning, compiler-option
+invalidation, build caching, and incremental object compilation.
+
+The rule derives Carven's output standard from the target's C++ language
+configuration. A target without one receives C++20. Changing the effective
+standard invalidates the batch transpile dependency.
 
 Repository development can install only the packaged rules while supplying a
 locally built compiler and runtime:
@@ -26,7 +40,10 @@ add_requires("carven", {system = false, configs = {rules_only = true}})
 Targets then apply `@carven/carven` and set `carven.program`,
 `carven.includedir`, and, when the command should run outside the xmake project
 directory, `carven.workdir`. The program, runtime header, and `.cv` inputs
-participate in incremental dependency checks.
+participate in incremental dependency checks. `carven.workdir` must be an
+ancestor of every configured source so the CLI receives stable relative module
+paths. Removing any required generated `.cpp` causes the complete source batch
+to be regenerated before incremental C++ compilation resumes.
 
 To test unpublished package or rule changes from a Carven checkout, point that
 checkout at this local repository and force xmake to reinstall the rules-only
