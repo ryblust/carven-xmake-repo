@@ -64,33 +64,16 @@ rule("carven.build")
 
         carven_program = path.absolute(carven_program, os.projectdir())
         includedir = path.absolute(includedir, os.projectdir())
-        local workdir = path.absolute(target:values("carven.workdir") or os.projectdir(), os.projectdir())
-        local outputdir = path.absolute(target:autogendir(), os.projectdir())
 
         target:data_set("carven.program", carven_program)
         target:data_set("carven.includedir", includedir)
-        target:data_set("carven.workdir", workdir)
-        target:data_set("carven.outputdir", outputdir)
 
         target:add("includedirs", includedir)
         target:add("includedirs", target:autogendir())
 
         for _, sourcefile_cv in ipairs(target:sourcefiles()) do
             if path.extension(sourcefile_cv) == ".cv" then
-                local sourcefile_absolute = path.absolute(sourcefile_cv, os.projectdir())
-                local source_input = path.unix(path.relative(sourcefile_absolute, workdir))
-                assert(
-                    source_input ~= ".." and not source_input:startswith("../"),
-                    string.format(
-                        "carven: source '%s' is outside work directory '%s'",
-                        sourcefile_cv,
-                        workdir
-                    )
-                )
-                local sourcefile_cpp = path.join(
-                    target:autogendir(),
-                    (source_input:gsub("%.cv$", ".cpp"))
-                )
+                local sourcefile_cpp = target:autogenfile((sourcefile_cv:gsub("%.cv$", ".cpp")))
                 target:add("files", sourcefile_cpp, {always_added = true})
             end
         end
@@ -99,39 +82,31 @@ rule("carven.build")
     before_buildcmd_files(function (target, batchcmds, sourcebatch, opt)
         local carven_program = assert(target:data("carven.program"))
         local includedir = assert(target:data("carven.includedir"))
-        local workdir = assert(target:data("carven.workdir"))
-        local outputdir = assert(target:data("carven.outputdir"))
         local cpp_standard = assert(target:data("carven.cpp_standard"))
-        local source_inputs = {}
+        local outputdir = target:autogendir()
+        local sourcefiles = table.copy(sourcebatch.sourcefiles)
+        table.sort(sourcefiles)
 
-        for _, sourcefile_cv in ipairs(sourcebatch.sourcefiles) do
-            local sourcefile_absolute = path.absolute(sourcefile_cv, os.projectdir())
-            table.insert(source_inputs, path.unix(path.relative(sourcefile_absolute, workdir)))
-        end
-        table.sort(source_inputs)
-
-        if #source_inputs > 0 then
+        if #sourcefiles > 0 then
             local argv = {
                 "transpile",
                 "-std=" .. cpp_standard,
                 "-o",
                 path(outputdir),
             }
-            local sourcefiles = {}
             local generated_cppfiles = {}
 
-            for _, source_input in ipairs(source_inputs) do
-                table.insert(argv, path(source_input))
-                table.insert(sourcefiles, path.absolute(source_input, workdir))
+            for _, sourcefile_cv in ipairs(sourcefiles) do
+                table.insert(argv, path.unix(sourcefile_cv))
                 table.insert(
                     generated_cppfiles,
-                    path.join(outputdir, (source_input:gsub("%.cv$", ".cpp")))
+                    target:autogenfile((sourcefile_cv:gsub("%.cv$", ".cpp")))
                 )
             end
 
             batchcmds:show_progress(opt.progress, "${color.build.object}transpiling.cv %s", target:name())
             batchcmds:mkdir(outputdir)
-            batchcmds:vrunv(carven_program, argv, {curdir = workdir})
+            batchcmds:vrunv(carven_program, argv, {curdir = os.projectdir()})
 
             batchcmds:add_depfiles(
                 sourcefiles,
@@ -139,8 +114,8 @@ rule("carven.build")
                 carven_program,
                 path.join(includedir, "carven", "runtime.hpp")
             )
-            batchcmds:add_depvalues(carven_program, workdir, outputdir, cpp_standard, source_inputs)
-            batchcmds:set_depcache(target:dependfile(path.join(outputdir, "carven.transpile")))
+            batchcmds:add_depvalues(cpp_standard)
+            batchcmds:set_depcache(target:dependfile(target:autogenfile("carven.transpile")))
         end
     end)
 
