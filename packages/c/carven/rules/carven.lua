@@ -2,6 +2,8 @@ rule("carven.build")
     set_extensions(".cv")
 
     on_config(function (target)
+        import("lib.detect.find_tool")
+
         local standards = {
             ["20"] = "c++20",
             ["2a"] = "c++20",
@@ -54,11 +56,14 @@ rule("carven.build")
                 target:pkg("carven"),
                 "please add_packages(\"carven\") or set local Carven program and include values"
             )
-            carven_program = carven_program or path.join(
-                carven_package:installdir(),
-                "bin",
-                is_host("windows") and "carven.exe" or "carven"
-            )
+            if not carven_program then
+                local envs = os.joinenvs(target:pkgenvs(), os.getenvs())
+                local carven_tool = assert(
+                    find_tool("carven", {envs = envs, force = true, norun = true}),
+                    "carven: executable not found in package or system PATH"
+                )
+                carven_program = carven_tool.program
+            end
             includedir = includedir or path.join(carven_package:installdir(), "include")
         end
 
@@ -80,9 +85,10 @@ rule("carven.build")
     end)
 
     before_buildcmd_files(function (target, batchcmds, sourcebatch, opt)
-        local carven_program = assert(target:data("carven.program"))
-        local includedir = assert(target:data("carven.includedir"))
-        local cpp_standard = assert(target:data("carven.cpp_standard"))
+        local carven_program = target:data("carven.program")
+        local includedir = target:data("carven.includedir")
+        local cpp_standard = target:data("carven.cpp_standard")
+        assert(carven_program and includedir and cpp_standard, "carven rule was not configured")
         local outputdir = target:autogendir()
         local sourcefiles = table.copy(sourcebatch.sourcefiles)
         table.sort(sourcefiles)
