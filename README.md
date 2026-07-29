@@ -35,7 +35,7 @@ disable the scanner, so the ordering edge is inactive there.
 
 The rule derives Carven's output standard from the target's C++ language
 configuration. A target without one receives C++20. Changing the effective
-standard invalidates the batch transpile dependency.
+standard invalidates the batch compilation dependency.
 
 Repository development can install only the packaged rules while supplying a
 locally built compiler and runtime:
@@ -47,7 +47,7 @@ add_requires("carven", {system = false, configs = {rules_only = true}})
 
 Targets then apply `@carven/carven` and set `carven.program` plus the
 single-root `carven.includedir` value. The compiler program and `.cv` inputs
-participate in transpile dependency checks. Generated C++ includes its runtime
+participate in compilation dependency checks. Generated C++ includes its runtime
 and StandardCraft headers normally, so xmake's C++ dependency scanner owns
 header invalidation. Removing any required generated `.cpp` causes the complete
 source batch to be regenerated before incremental C++ compilation resumes.
@@ -58,14 +58,14 @@ Inline-test targets use ordinary xmake target and test registration concepts:
 target("app-test")
     set_kind("binary")
     add_packages("carven")
-    add_rules("@carven/carven", {enable_tests = true})
+    add_rules("@carven/carven", {emit_tests = true})
     add_files("src/**.cv", "tests/**_test.cv")
     add_tests("default")
 ```
 
-`enable_tests = true` passes `--tests` and adds the generated default runner.
-For a custom runner, also set `test_main = false` and add the implementation
-translation unit yourself. Setting `test_main = false` without enabling tests
+`emit_tests = true` passes `--emit-tests` and adds the generated default runner.
+For a custom runner, also set `emit_test_main = false` and add the implementation
+translation unit yourself. Setting `emit_test_main = false` without emitting tests
 is rejected. The rule does not discover test files, create targets, or call
 `add_tests`.
 

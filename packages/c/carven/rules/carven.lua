@@ -16,14 +16,14 @@ rule("carven.build")
     on_config(function (target)
         import("lib.detect.find_tool")
 
-        local enable_tests = rule_option(target, "enable_tests")
-        local test_main_option = rule_option(target, "test_main")
-        enable_tests = enable_tests == true
+        local emit_tests = rule_option(target, "emit_tests")
+        local emit_test_main_option = rule_option(target, "emit_test_main")
+        emit_tests = emit_tests == true
         assert(
-            enable_tests or test_main_option ~= false,
-            "carven: test_main = false requires enable_tests = true"
+            emit_tests or emit_test_main_option ~= false,
+            "carven: emit_test_main = false requires emit_tests = true"
         )
-        local test_main = test_main_option ~= false
+        local emit_test_main = emit_test_main_option ~= false
 
         local standards = {
             ["20"] = "c++20",
@@ -93,8 +93,8 @@ rule("carven.build")
 
         target:data_set("carven.program", carven_program)
         target:data_set("carven.includedir", includedir)
-        target:data_set("carven.enable_tests", enable_tests)
-        target:data_set("carven.test_main", test_main)
+        target:data_set("carven.emit_tests", emit_tests)
+        target:data_set("carven.emit_test_main", emit_test_main)
 
         target:add("includedirs", includedir)
         target:add("includedirs", target:autogendir())
@@ -105,7 +105,7 @@ rule("carven.build")
                 target:add("files", sourcefile_cpp, {always_added = true})
             end
         end
-        if enable_tests and test_main then
+        if emit_tests and emit_test_main then
             target:add("files", path.join(target:autogendir(), "carven-test-main.cpp"), {
                 always_added = true,
             })
@@ -116,8 +116,8 @@ rule("carven.build")
         local carven_program = target:data("carven.program")
         local includedir = target:data("carven.includedir")
         local cpp_standard = target:data("carven.cpp_standard")
-        local enable_tests = target:data("carven.enable_tests")
-        local test_main = target:data("carven.test_main")
+        local emit_tests = target:data("carven.emit_tests")
+        local emit_test_main = target:data("carven.emit_test_main")
         assert(carven_program and includedir and cpp_standard, "carven rule was not configured")
         local outputdir = target:autogendir()
         local sourcefiles = table.copy(sourcebatch.sourcefiles)
@@ -125,16 +125,15 @@ rule("carven.build")
 
         if #sourcefiles > 0 then
             local argv = {
-                "transpile",
                 "-std=" .. cpp_standard,
                 "-o",
                 path(outputdir),
             }
             local generated_cppfiles = {}
 
-            if enable_tests then
-                table.insert(argv, "--tests")
-                if not test_main then
+            if emit_tests then
+                table.insert(argv, "--emit-tests")
+                if not emit_test_main then
                     table.insert(argv, "--no-test-main")
                 end
             end
@@ -147,11 +146,11 @@ rule("carven.build")
                 )
             end
 
-            if enable_tests and test_main then
+            if emit_tests and emit_test_main then
                 table.insert(generated_cppfiles, path.join(outputdir, "carven-test-main.cpp"))
             end
 
-            batchcmds:show_progress(opt.progress, "${color.build.object}transpiling.cv %s", target:name())
+            batchcmds:show_progress(opt.progress, "${color.build.object}compiling.cv %s", target:name())
             batchcmds:mkdir(outputdir)
             batchcmds:vrunv(carven_program, argv, {curdir = os.projectdir()})
 
@@ -160,8 +159,8 @@ rule("carven.build")
             table.join2(depfiles, generated_cppfiles)
             table.insert(depfiles, carven_program)
             batchcmds:add_depfiles(table.unpack(depfiles))
-            batchcmds:add_depvalues(cpp_standard, enable_tests, test_main)
-            batchcmds:set_depcache(target:dependfile(target:autogenfile("carven.transpile")))
+            batchcmds:add_depvalues(cpp_standard, emit_tests, emit_test_main)
+            batchcmds:set_depcache(target:dependfile(target:autogenfile("carven.compile")))
         end
     end)
 

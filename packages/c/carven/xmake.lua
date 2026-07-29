@@ -1,7 +1,7 @@
 package("carven")
     set_kind("toolchain")
     set_homepage("https://github.com/ryblust/carven")
-    set_description("The Carven language transpiler")
+    set_description("The Carven source-to-C++ compiler")
 
     add_configs("rules_only", {
         description = "Install only the Carven xmake rules",
