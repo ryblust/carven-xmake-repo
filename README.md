@@ -25,17 +25,22 @@ C++ include directories. Generated `.cpp` files are registered as ordinary
 xmake C++ sources, so xmake owns compiler dependency scanning, compiler-option
 invalidation, build caching, and incremental object compilation.
 
-Generation runs from `on_preparecmd_files`, not `before_buildcmd_files`. Xmake's
-C++ named-module scanner also runs during the prepare phase and scans ordinary
-`.cpp` consumers as well as module interface units. The `carven.build`
+Generation runs as a prepare-phase job before xmake compiles generated C++.
+Xmake's C++ named-module scanner also runs during the prepare phase and scans
+ordinary `.cpp` consumers as well as module interface units. The `carven.build`
 source-batch rule is therefore explicitly ordered before
 `c++.build.modules.scanner`; placing that order on the façade rule does not
 reliably add it to the source-batch prepare graph. Targets without C++ modules
 disable the scanner, so the ordering edge is inactive there.
 
-The rule derives Carven's output standard from the target's C++ language
-configuration. A target without one receives C++20. Changing the effective
-standard invalidates the batch compilation dependency.
+The target's C++ language configuration belongs entirely to xmake and its C++
+toolchain; it is not passed to Carven. Carven-generated code requires at least
+C++20. A target without an explicit C++ language receives C++20 from the rule;
+an explicit lower or unsupported C++ standard is rejected during configuration.
+
+Generated headers remain private to their target. Cross-target generated-header
+publication and C++ module consumers are not part of the current `.hpp + .cpp`
+integration contract.
 
 Repository development can install only the packaged rules while supplying a
 locally built compiler and runtime:
@@ -46,11 +51,19 @@ add_requires("carven", {system = false, configs = {rules_only = true}})
 ```
 
 Targets then apply `@carven/carven` and set `carven.program` plus the
-single-root `carven.includedir` value. The compiler program and `.cv` inputs
-participate in compilation dependency checks. Generated C++ includes its runtime
+single-root `carven.includedir` value. The compiler program, complete sorted
+`.cv` input set, emission options, and path-only artifact receipt participate in
+generation dependency checks. Generated C++ includes its runtime
 and StandardCraft headers normally, so xmake's C++ dependency scanner owns
-header invalidation. Removing any required generated `.cpp` causes the complete
-source batch to be regenerated before incremental C++ compilation resumes.
+header invalidation. Removing any receipt-owned generated file causes the
+complete source batch to be regenerated before incremental C++ compilation
+resumes. A changed `.cv` still runs one complete Carven batch, while
+content-identical artifacts retain their mtimes so downstream C++ compilation
+only rebuilds units whose generated content changed. This is content-stable
+incremental materialization, not compiler-level incremental analysis.
+After each Carven invocation, a missing, malformed, or unreadable artifact
+receipt fails generation instead of guessing which generated files the compiler
+owns.
 
 Inline-test targets use ordinary xmake target and test registration concepts:
 
