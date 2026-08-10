@@ -25,13 +25,12 @@ C++ include directories. Generated `.cpp` files are registered as ordinary
 xmake C++ sources, so xmake owns compiler dependency scanning, compiler-option
 invalidation, build caching, and incremental object compilation.
 
-Generation runs as a prepare-phase job before xmake compiles generated C++.
-Xmake's C++ named-module scanner also runs during the prepare phase and scans
-ordinary `.cpp` consumers as well as module interface units. The `carven.build`
-source-batch rule is therefore explicitly ordered before
-`c++.build.modules.scanner`; placing that order on the façade rule does not
-reliably add it to the source-batch prepare graph. Targets without C++ modules
-disable the scanner, so the ordering edge is inactive there.
+Generation runs as a before-prepare job before xmake compiles generated C++.
+Xmake's C++ named-module scanner runs in the main prepare phase and scans
+ordinary `.cpp` consumers as well as module interface units. The prepare-stage
+boundary therefore guarantees that generated C++ and headers exist before the
+scanner starts, without coupling the packaged rule to the scanner's internal
+rule name.
 
 The target's C++ language configuration belongs entirely to xmake and its C++
 toolchain; it is not passed to Carven. Carven-generated code requires at least

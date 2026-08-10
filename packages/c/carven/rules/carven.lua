@@ -189,10 +189,6 @@ end
 
 rule("carven.build")
     set_extensions(".cv")
-    -- Generated C++ must exist before xmake scans ordinary C++ consumers of
-    -- named modules. Both actions run in the prepare phase, so order the
-    -- source-batch rule itself before the scanner.
-    add_orders("@carven/carven.build", "c++.build.modules.scanner")
 
     on_config(function (target)
         import("lib.detect.find_tool")
@@ -268,7 +264,7 @@ rule("carven.build")
         end
     end)
 
-    on_prepare_files(function (target, jobgraph, sourcebatch, opt)
+    before_prepare_files(function (target, jobgraph, sourcebatch, opt)
         import("core.base.option")
         import("core.project.depend")
         import("utils.progress")
