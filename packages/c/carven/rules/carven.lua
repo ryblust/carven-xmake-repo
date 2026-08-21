@@ -1,13 +1,10 @@
 local function rule_option(target, name)
-    local value = target:extraconf("rules", "@carven/carven", name)
-    if value == nil then
-        value = target:extraconf("rules", "carven", name)
-    end
-    return value
+    return target:extraconf("rules", "@carven/carven", name)
 end
 
-local artifacts_manifest_name = ".carven-artifacts"
-local artifacts_manifest_schema = "carven-artifacts-v1"
+local artifact_receipt_name = ".carven-artifacts"
+local artifact_receipt_header = "carven-artifacts\t1"
+local rule_file = path.join(os.scriptdir(), "carven.lua")
 
 local cpp_standards = {
     ["20"] = "c++20",
@@ -38,20 +35,6 @@ local function normalize_cpp_language(language)
     return normalized
 end
 
-local function split_tabs(line)
-    local fields = {}
-    local offset = 1
-    while true do
-        local separator = line:find("\t", offset, true)
-        if not separator then
-            table.insert(fields, line:sub(offset))
-            return fields
-        end
-        table.insert(fields, line:sub(offset, separator - 1))
-        offset = separator + 1
-    end
-end
-
 local function validate_relative_path(value, description)
     if #value == 0 then
         return "carven: " .. description .. " is empty"
@@ -75,55 +58,56 @@ local function validate_relative_path(value, description)
     return nil
 end
 
-local function parse_artifacts_manifest(artifacts_manifest_file, file_io)
-    if not os.exists(artifacts_manifest_file) then
-        return nil, "carven: artifacts manifest does not exist: " .. artifacts_manifest_file
+local function parse_artifact_receipt(receipt_file, file_io)
+    if not os.exists(receipt_file) then
+        return nil, "carven: artifact receipt does not exist: " .. receipt_file
     end
-    if not os.isfile(artifacts_manifest_file) then
-        return nil, "carven: artifacts manifest is not a file: " .. artifacts_manifest_file
+    if not os.isfile(receipt_file) then
+        return nil, "carven: artifact receipt is not a file: " .. receipt_file
     end
-    local content, read_error = file_io.readfile(artifacts_manifest_file)
+    local content, read_error = file_io.readfile(receipt_file)
     if not content then
-        return nil, "carven: cannot read artifacts manifest: " .. tostring(read_error)
+        return nil, "carven: cannot read artifact receipt: " .. tostring(read_error)
     end
     if content:sub(-1) ~= "\n" then
-        return nil, "carven: artifacts manifest must end with a newline"
+        return nil, "carven: artifact receipt must end with a newline"
     end
     local lines = {}
     for line in content:gmatch("([^\n]*)\n") do
-        if line:sub(-1) == "\r" then
-            line = line:sub(1, -2)
-        end
         table.insert(lines, line)
     end
-    local header = split_tabs(lines[1] or "")
-    if #header ~= 2 or header[1] ~= "carven-artifacts" or header[2] ~= "1" then
-        return nil, "carven: invalid or unsupported artifacts manifest header"
+    if lines[1] ~= artifact_receipt_header then
+        return nil, "carven: invalid artifact receipt header"
     end
 
     local artifacts = {}
-    local paths = {}
     local previous_path = nil
+    local accepted_paths = {}
     for index = 2, #lines do
-        local fields = split_tabs(lines[index])
-        if #fields ~= 2 then
-            return nil, "carven: artifacts manifest record must have two fields"
+        local logical_path = lines[index]
+        if logical_path:find("\t", 1, true) then
+            return nil, "carven: artifact receipt path contains a tab"
         end
-        if fields[1] ~= "artifact" then
-            return nil, "carven: unknown artifacts manifest record"
-        end
-        local logical_path = fields[2]
         local path_error = validate_relative_path(logical_path, "artifact logical path")
         if path_error then
             return nil, path_error
         end
-        if paths[logical_path] then
-            return nil, "carven: duplicate artifact logical path: " .. logical_path
+        if logical_path == artifact_receipt_name or
+            logical_path:sub(1, #artifact_receipt_name + 1) == artifact_receipt_name .. "/"
+        then
+            return nil, "carven: artifact receipt cannot own itself"
         end
         if previous_path ~= nil and previous_path >= logical_path then
-            return nil, "carven: artifacts manifest records are not sorted"
+            return nil, "carven: artifact receipt paths are not sorted and unique"
         end
-        paths[logical_path] = true
+        local separator = logical_path:find("/", 1, true)
+        while separator do
+            if accepted_paths[logical_path:sub(1, separator - 1)] then
+                return nil, "carven: artifact receipt contains a path below an owned file"
+            end
+            separator = logical_path:find("/", separator + 1, true)
+        end
+        accepted_paths[logical_path] = true
         previous_path = logical_path
         table.insert(artifacts, logical_path)
     end
@@ -132,35 +116,46 @@ end
 
 local function make_invocation(target, sourcebatch, path_api)
     local sourcefiles = table.copy(sourcebatch.sourcefiles)
-    table.sort(sourcefiles)
     if #sourcefiles == 0 then
         return nil
     end
+    table.sort(sourcefiles)
+
+    local source_arguments = {}
+    local projectdir = os.projectdir()
+    for _, sourcefile_cv in ipairs(sourcefiles) do
+        local source_argument = path_api.unix(path_api.relative(
+            path_api.absolute(sourcefile_cv, projectdir),
+            projectdir
+        ))
+        local source_error = validate_relative_path(source_argument, "Carven source path")
+        if source_error then
+            return nil, source_error .. ": " .. tostring(sourcefile_cv)
+        end
+        table.insert(source_arguments, source_argument)
+    end
+    table.sort(source_arguments)
 
     local outputdir = target:autogendir()
     local program = target:data("carven.program")
     if not program then
         return nil, "carven rule was not configured"
     end
-    local emit_tests = target:data("carven.emit_tests")
-    local emit_test_main = target:data("carven.emit_test_main")
+    local tests = target:data("carven.tests")
     local argv = {
-        "-o",
+        "--reconcile-output",
         tostring(path_api(outputdir)),
-        "--artifacts-manifest",
-        artifacts_manifest_name,
     }
-    if emit_tests then
-        table.insert(argv, "--emit-tests")
-        if not emit_test_main then
-            table.insert(argv, "--no-test-main")
-        end
+    if tests == "default" then
+        table.insert(argv, "--tests=default")
+    elseif tests == "external" then
+        table.insert(argv, "--tests=external")
     end
-    for _, sourcefile_cv in ipairs(sourcefiles) do
-        table.insert(argv, tostring(path_api.unix(sourcefile_cv)))
+    for _, source_argument in ipairs(source_arguments) do
+        table.insert(argv, source_argument)
     end
 
-    local depvalues = {artifacts_manifest_schema, tostring(program)}
+    local depvalues = {artifact_receipt_header, tostring(program)}
     for _, argument in ipairs(argv) do
         table.insert(depvalues, argument)
     end
@@ -168,22 +163,24 @@ local function make_invocation(target, sourcebatch, path_api)
     return {
         program = program,
         outputdir = outputdir,
-        artifacts_manifest_file = path_api.join(outputdir, artifacts_manifest_name),
+        receipt_file = path_api.join(outputdir, artifact_receipt_name),
         sourcefiles = sourcefiles,
+        rule_file = rule_file,
         argv = argv,
         depvalues = depvalues,
         dependfile = target:dependfile(target:autogenfile("carven.compile")),
     }
 end
 
-local function invocation_depfiles(invocation, artifacts_manifest_paths, path_api)
+local function invocation_depfiles(invocation, artifact_paths, path_api)
     local depfiles = {}
     table.join2(depfiles, invocation.sourcefiles)
-    table.insert(depfiles, invocation.artifacts_manifest_file)
-    for _, logical_path in ipairs(artifacts_manifest_paths) do
+    table.insert(depfiles, invocation.receipt_file)
+    for _, logical_path in ipairs(artifact_paths) do
         table.insert(depfiles, path_api.join(invocation.outputdir, logical_path))
     end
     table.insert(depfiles, invocation.program)
+    table.insert(depfiles, invocation.rule_file)
     return depfiles
 end
 
@@ -193,13 +190,10 @@ rule("carven.build")
     on_config(function (target)
         import("lib.detect.find_tool")
 
-        local emit_tests = rule_option(target, "emit_tests")
-        local emit_test_main_option = rule_option(target, "emit_test_main")
-        emit_tests = emit_tests == true
-        if not emit_tests and emit_test_main_option == false then
-            raise("carven: emit_test_main = false requires emit_tests = true")
+        local tests = rule_option(target, "tests")
+        if tests ~= nil and tests ~= "default" and tests ~= "external" then
+            raise("carven: tests must be 'default' or 'external'")
         end
-        local emit_test_main = emit_test_main_option ~= false
 
         local cpp_standard
         for _, language in ipairs(table.wrap(target:get("languages"))) do
@@ -245,8 +239,7 @@ rule("carven.build")
 
         target:data_set("carven.program", carven_program)
         target:data_set("carven.includedir", includedir)
-        target:data_set("carven.emit_tests", emit_tests)
-        target:data_set("carven.emit_test_main", emit_test_main)
+        target:data_set("carven.tests", tests)
 
         target:add("includedirs", includedir)
         target:add("includedirs", target:autogendir())
@@ -257,7 +250,7 @@ rule("carven.build")
                 target:add("files", sourcefile_cpp, {always_added = true})
             end
         end
-        if emit_tests and emit_test_main then
+        if tests == "default" then
             target:add("files", path.join(target:autogendir(), "carven-test-main.cpp"), {
                 always_added = true,
             })
@@ -299,13 +292,19 @@ rule("carven.build")
                 print(os.args(table.join(invocation.program, invocation.argv)))
                 return
             end
+            if not os.isfile(invocation.program) then
+                raise(string.format(
+                    "carven: compiler executable does not exist: %s; build or install Carven before building this target",
+                    invocation.program
+                ))
+            end
             os.mkdir(invocation.outputdir)
             os.vrunv(invocation.program, invocation.argv, {curdir = os.projectdir()})
 
-            local current_artifact_paths, current_artifacts_manifest_error =
-                parse_artifacts_manifest(invocation.artifacts_manifest_file, io)
+            local current_artifact_paths, receipt_error =
+                parse_artifact_receipt(invocation.receipt_file, io)
             if not current_artifact_paths then
-                raise(current_artifacts_manifest_error)
+                raise(receipt_error)
             end
             depend.save({
                 files = invocation_depfiles(invocation, current_artifact_paths, path),

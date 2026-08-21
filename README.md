@@ -15,22 +15,23 @@ target("app")
     add_files("main.cv")
 ```
 
-The rule passes every target `.cv` input to one deterministic Carven
-invocation before compiling any generated C++. Source paths are relative to the
-Xmake project directory and mirrored below xmake's target autogeneration
-directory. A root-level `main.cv` generates `<autogendir>/main.cpp`, while
-`src/app/main.cv` generates `<autogendir>/src/app/main.cpp`. Generated headers
-are resolved through `<autogendir>`; input source directories are not added as
-C++ include directories. Generated `.cpp` files are registered as ordinary
-xmake C++ sources, so xmake owns compiler dependency scanning, compiler-option
+The rule passes every target `.cv` input to one deterministic Carven invocation
+with `--reconcile-output <autogendir>` before compiling generated C++. Source
+paths are relative to the Xmake project directory and mirrored below xmake's
+target autogeneration directory. A root-level `main.cv` generates
+`<autogendir>/main.cpp`, while `src/app/main.cv` generates
+`<autogendir>/src/app/main.cpp`. Generated headers are resolved privately
+through `<autogendir>`; input source directories are not added as C++ include
+directories. Generated `.cpp` files are registered as ordinary xmake C++
+sources, so xmake owns compiler dependency scanning, compiler-option
 invalidation, build caching, and incremental object compilation.
 
-Generation runs as a before-prepare job before xmake compiles generated C++.
-Xmake's C++ named-module scanner runs in the main prepare phase and scans
-ordinary `.cpp` consumers as well as module interface units. The prepare-stage
-boundary therefore guarantees that generated C++ and headers exist before the
-scanner starts, without coupling the packaged rule to the scanner's internal
-rule name.
+Generation runs through `before_prepare_files`, xmake's job graph, and
+`core.project.depend`. Xmake's C++ named-module scanner runs in the main prepare
+phase and scans ordinary `.cpp` consumers as well as module interface units.
+The prepare-stage boundary therefore guarantees that generated C++ and headers
+exist before the scanner starts, without coupling the packaged rule to the
+scanner's internal rule name or translating generation into batch commands.
 
 The target's C++ language configuration belongs entirely to xmake and its C++
 toolchain; it is not passed to Carven. Carven-generated code requires at least
@@ -49,20 +50,21 @@ add_repositories("carven-xmake-repo https://github.com/ryblust/carven-xmake-repo
 add_requires("carven", {system = false, configs = {rules_only = true}})
 ```
 
-Targets then apply `@carven/carven` and set `carven.program` plus the
-single-root `carven.includedir` value. The compiler program, complete sorted
-`.cv` input set, emission options, and path-only artifact receipt participate in
-generation dependency checks. Generated C++ includes its runtime
-and StandardCraft headers normally, so xmake's C++ dependency scanner owns
-header invalidation. Removing any receipt-owned generated file causes the
-complete source batch to be regenerated before incremental C++ compilation
-resumes. A changed `.cv` still runs one complete Carven batch, while
-content-identical artifacts retain their mtimes so downstream C++ compilation
-only rebuilds units whose generated content changed. This is content-stable
-incremental materialization, not compiler-level incremental analysis.
-After each Carven invocation, a missing, malformed, or unreadable artifact
-receipt fails generation instead of guessing which generated files the compiler
-owns.
+Targets then apply `@carven/carven` and set `carven.program` plus the single-root
+`carven.includedir` value. The compiler program, complete sorted `.cv` input
+set, full invocation, receipt schema, installed rule file, path-only receipt,
+and every generated artifact participate in generation dependency checks.
+Generated C++ includes its runtime and generated interface headers normally, so
+xmake's C++ dependency scanner owns header invalidation. Removing any
+receipt-owned generated file causes the complete source batch to be regenerated
+before incremental C++ compilation resumes. A changed `.cv` still runs one
+complete Carven batch, while content-identical artifacts retain their mtimes so
+downstream C++ compilation only rebuilds units whose generated content changed.
+This is content-stable incremental materialization, not compiler-level
+incremental analysis. After each Carven invocation, a missing, malformed,
+unreadable, unsorted, or otherwise invalid receipt fails generation instead of
+guessing which generated files the compiler owns. Changing only the installed
+rule file also invalidates the generation job.
 
 Inline-test targets use ordinary xmake target and test registration concepts:
 
@@ -70,16 +72,16 @@ Inline-test targets use ordinary xmake target and test registration concepts:
 target("app-test")
     set_kind("binary")
     add_packages("carven")
-    add_rules("@carven/carven", {emit_tests = true})
+    add_rules("@carven/carven", {tests = "default"})
     add_files("src/**.cv", "tests/**_test.cv")
     add_tests("default")
 ```
 
-`emit_tests = true` passes `--emit-tests` and adds the generated default runner.
-For a custom runner, also set `emit_test_main = false` and add the implementation
-translation unit yourself. Setting `emit_test_main = false` without emitting tests
-is rejected. The rule does not discover test files, create targets, or call
-`add_tests`.
+`tests = "default"` emits inline tests and registers Carven's generated runner.
+`tests = "external"` emits inline tests without a runner; the target supplies an
+ordinary C++ runner with `add_files`. Omitting `tests` emits no tests. These are
+the only accepted modes. The rule does not discover test files, copy or compile a
+runner path, create targets, or call `add_tests`.
 
 To test unpublished package or rule changes from a Carven checkout, point that
 checkout at this local repository and force xmake to reinstall the rules-only
@@ -87,8 +89,15 @@ package:
 
 ```shell
 CARVEN_XMAKE_REPO_DIR=/path/to/carven-xmake-repo xmake require --force
+CARVEN_XMAKE_REPO_DIR=/path/to/carven-xmake-repo xmake f
+CARVEN_XMAKE_REPO_DIR=/path/to/carven-xmake-repo xmake build
 CARVEN_XMAKE_REPO_DIR=/path/to/carven-xmake-repo xmake test
 ```
+
+The build step before testing is required. Generation runs in Xmake's prepare
+phase so named-module scanning can consume generated files; a compiler target
+from the same project cannot be built early enough by an ordinary target
+dependency.
 
 `CARVEN_XMAKE_REPO_DIR` is consumed by the Carven checkout, not by this package
 repository. Without it, the Carven checkout uses the GitHub repository.
@@ -105,7 +114,7 @@ source from GitHub. Rules-only installations do not use Carven source and
 therefore ignore `CARVEN_SOURCE_DIR`.
 
 Complete package installation configures the Carven source build with
-`build_tests=false`. The package only needs the `carven` executable and runtime
+`build_tests=n`. The package only needs the `carven` executable and runtime
 headers, so repository test targets and their rules-only package dependency are
 excluded from package configuration. This also prevents the source build from
 recursively requesting the rules-only variant of the package being installed.
