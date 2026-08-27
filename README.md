@@ -16,15 +16,17 @@ target("app")
 ```
 
 The rule passes every target `.cv` input to one deterministic Carven invocation
-with `--reconcile-output <autogendir>` before compiling generated C++. Source
+with `--output-dir <autogendir>` before compiling generated C++. Source
 paths are relative to the Xmake project directory and mirrored below xmake's
 target autogeneration directory. A root-level `main.cv` generates
 `<autogendir>/main.cpp`, while `src/app/main.cv` generates
-`<autogendir>/src/app/main.cpp`. Every generated implementation includes the
-single private `<autogendir>/carven-internal.hpp`; input source directories are
-not added as C++ include directories. Generated `.cpp` files are registered as
-ordinary xmake C++ sources, so xmake owns compiler dependency scanning,
-compiler-option
+`<autogendir>/src/app/main.cpp`. Published semantic surfaces are emitted as
+target-private component headers at the lexicographically first source anchor,
+such as `<autogendir>/src/app/main.carven-interface.hpp`. Each generated
+implementation includes its own surface component, when present, and the
+external components it actually uses. Input source directories are not added
+as C++ include directories. Generated `.cpp` files are registered as ordinary
+xmake C++ sources, so xmake owns compiler dependency scanning, compiler-option
 invalidation, build caching, and incremental object compilation.
 
 Generation runs through `before_prepare_files`, xmake's job graph, and
@@ -39,20 +41,22 @@ toolchain; it is not passed to Carven. Carven-generated code requires at least
 C++20. A target without an explicit C++ language receives C++20 from the rule;
 an explicit lower or unsupported C++ standard is rejected during configuration.
 
-The generated umbrella remains private to its target. Cross-target generated
-header publication and C++ module consumers are not part of the integration
-contract.
+Generated interface components remain private to their target. Cross-target
+generated header publication and C++ module consumers are not part of the
+integration contract.
 
-The rule passes a private linkage salt on every compiler invocation. Its
-default is the project directory's logical name plus `target:fullname()`, so
-two Xmake targets compiling the same canonical module paths do not collide
-when linked into one process. A target can replace that identity explicitly:
+The rule passes a stable linkage domain on every compiler invocation. Its
+default is the normalized absolute project directory plus `target:fullname()`,
+so source edits do not rename generated C++ entities while two Xmake targets
+compiling the same canonical module paths do not collide when linked into one
+process. A caller that needs identity to survive checkout relocation can
+replace the domain key explicitly:
 
 ```lua
-add_rules("@carven/carven", {linkage_salt = "my-project:stable-domain"})
+add_rules("@carven/carven", {linkage_domain = "my-project:stable-domain"})
 ```
 
-The salt and all other compiler arguments participate in the generation
+The domain key and all other compiler arguments participate in the generation
 dependency values; changing it regenerates the batch.
 
 Repository development can install only the packaged rules while supplying a
@@ -67,17 +71,18 @@ Targets then apply `@carven/carven` and set `carven.program` plus the single-roo
 `carven.includedir` value. The compiler program, complete sorted `.cv` input
 set, full invocation, receipt schema, installed rule file, path-only receipt,
 and every generated artifact participate in generation dependency checks.
-Generated C++ includes its runtime and private umbrella normally, so
-xmake's C++ dependency scanner owns header invalidation. Removing any
-receipt-owned generated file causes the complete source batch to be regenerated
-before incremental C++ compilation resumes. A changed `.cv` still runs one
-complete Carven batch, while content-identical artifacts retain their mtimes so
-downstream C++ compilation only rebuilds units whose generated content changed.
-This is content-stable incremental materialization, not compiler-level
-incremental analysis. After each Carven invocation, a missing, malformed,
-unreadable, unsorted, or otherwise invalid receipt fails generation instead of
-guessing which generated files the compiler owns. Changing only the installed
-rule file also invalidates the generation job.
+Generated C++ includes its runtime and interface components normally, so
+xmake's C++ dependency scanner discovers the component graph and owns header
+invalidation. Removing any receipt-owned generated file causes the complete
+source batch to be regenerated before incremental C++ compilation resumes. A
+changed `.cv` still runs one complete Carven batch, while content-identical
+artifacts retain their mtimes so downstream C++ compilation only rebuilds units
+whose generated content changed. This is content-stable incremental
+materialization, not compiler-level incremental analysis. After each Carven
+invocation, a missing, malformed, unreadable, unsorted, or otherwise invalid
+receipt fails generation instead of guessing which generated files the
+compiler owns. Changing only the installed rule file also invalidates the
+generation job.
 
 Inline-test targets use ordinary xmake target and test registration concepts:
 

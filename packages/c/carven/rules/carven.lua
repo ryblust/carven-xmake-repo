@@ -142,12 +142,12 @@ local function make_invocation(target, sourcebatch, path_api)
         return nil, "carven rule was not configured"
     end
     local tests = target:data("carven.tests")
-    local linkage_salt = target:data("carven.linkage_salt")
+    local linkage_domain = target:data("carven.linkage_domain")
     local argv = {
-        "--reconcile-output",
+        "--output-dir",
         tostring(path_api(outputdir)),
-        "--linkage-salt",
-        linkage_salt,
+        "--linkage-domain",
+        linkage_domain,
     }
     if tests == "default" then
         table.insert(argv, "--tests=default")
@@ -197,12 +197,12 @@ rule("carven.build")
         if tests ~= nil and tests ~= "default" and tests ~= "external" then
             raise("carven: tests must be 'default' or 'external'")
         end
-        local linkage_salt = rule_option(target, "linkage_salt")
-        if linkage_salt ~= nil and type(linkage_salt) ~= "string" then
-            raise("carven: linkage_salt must be a string")
+        local linkage_domain = rule_option(target, "linkage_domain")
+        if linkage_domain ~= nil and type(linkage_domain) ~= "string" then
+            raise("carven: linkage_domain must be a string")
         end
-        linkage_salt = linkage_salt
-                    or (path.filename(os.projectdir()) .. ":" .. target:fullname())
+        linkage_domain = linkage_domain
+                    or (path.absolute(os.projectdir()) .. ":" .. target:fullname())
 
         local cpp_standard
         for _, language in ipairs(table.wrap(target:get("languages"))) do
@@ -249,7 +249,7 @@ rule("carven.build")
         target:data_set("carven.program", carven_program)
         target:data_set("carven.includedir", includedir)
         target:data_set("carven.tests", tests)
-        target:data_set("carven.linkage_salt", linkage_salt)
+        target:data_set("carven.linkage_domain", linkage_domain)
 
         target:add("includedirs", includedir)
         target:add("includedirs", target:autogendir())
