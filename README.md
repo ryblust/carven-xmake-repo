@@ -20,10 +20,11 @@ with `--reconcile-output <autogendir>` before compiling generated C++. Source
 paths are relative to the Xmake project directory and mirrored below xmake's
 target autogeneration directory. A root-level `main.cv` generates
 `<autogendir>/main.cpp`, while `src/app/main.cv` generates
-`<autogendir>/src/app/main.cpp`. Generated headers are resolved privately
-through `<autogendir>`; input source directories are not added as C++ include
-directories. Generated `.cpp` files are registered as ordinary xmake C++
-sources, so xmake owns compiler dependency scanning, compiler-option
+`<autogendir>/src/app/main.cpp`. Every generated implementation includes the
+single private `<autogendir>/carven-internal.hpp`; input source directories are
+not added as C++ include directories. Generated `.cpp` files are registered as
+ordinary xmake C++ sources, so xmake owns compiler dependency scanning,
+compiler-option
 invalidation, build caching, and incremental object compilation.
 
 Generation runs through `before_prepare_files`, xmake's job graph, and
@@ -38,9 +39,21 @@ toolchain; it is not passed to Carven. Carven-generated code requires at least
 C++20. A target without an explicit C++ language receives C++20 from the rule;
 an explicit lower or unsupported C++ standard is rejected during configuration.
 
-Generated headers remain private to their target. Cross-target generated-header
-publication and C++ module consumers are not part of the current `.hpp + .cpp`
-integration contract.
+The generated umbrella remains private to its target. Cross-target generated
+header publication and C++ module consumers are not part of the integration
+contract.
+
+The rule passes a private linkage salt on every compiler invocation. Its
+default is the project directory's logical name plus `target:fullname()`, so
+two Xmake targets compiling the same canonical module paths do not collide
+when linked into one process. A target can replace that identity explicitly:
+
+```lua
+add_rules("@carven/carven", {linkage_salt = "my-project:stable-domain"})
+```
+
+The salt and all other compiler arguments participate in the generation
+dependency values; changing it regenerates the batch.
 
 Repository development can install only the packaged rules while supplying a
 locally built compiler and runtime:
@@ -54,7 +67,7 @@ Targets then apply `@carven/carven` and set `carven.program` plus the single-roo
 `carven.includedir` value. The compiler program, complete sorted `.cv` input
 set, full invocation, receipt schema, installed rule file, path-only receipt,
 and every generated artifact participate in generation dependency checks.
-Generated C++ includes its runtime and generated interface headers normally, so
+Generated C++ includes its runtime and private umbrella normally, so
 xmake's C++ dependency scanner owns header invalidation. Removing any
 receipt-owned generated file causes the complete source batch to be regenerated
 before incremental C++ compilation resumes. A changed `.cv` still runs one
