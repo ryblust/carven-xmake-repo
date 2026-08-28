@@ -2,116 +2,75 @@ local function rule_option(target, name)
     return target:extraconf("rules", "@carven/carven", name)
 end
 
-local artifact_receipt_name = ".carven-artifacts"
-local artifact_receipt_header = "carven-artifacts\t1"
 local rule_file = path.join(os.scriptdir(), "carven.lua")
 
-local cpp_standards = {
-    ["20"] = "c++20",
-    ["2a"] = "c++20",
-    ["23"] = "c++23",
-    ["2b"] = "c++23",
-    ["26"] = "c++26",
-    ["2c"] = "c++26",
-    ["latest"] = "c++26",
-}
-
-local function normalize_cpp_language(language)
-    local suffix =
-        language:match("^c%+%+(.*)$")
-        or language:match("^cxx(.*)$")
-        or language:match("^gnu%+%+(.*)$")
-        or language:match("^gnuxx(.*)$")
-    if not suffix then
-        return nil
-    end
-    local normalized = cpp_standards[suffix]
-    if not normalized then
-        return nil, string.format(
-            "carven: unsupported C++ target language '%s'; expected C++20, C++23, or C++26",
-            language
-        )
-    end
-    return normalized
-end
-
-local function validate_relative_path(value, description)
-    if #value == 0 then
-        return "carven: " .. description .. " is empty"
-    end
-    if value:sub(1, 1) == "/" or value:sub(-1) == "/" or
-        value:find("\\", 1, true) or value:match("^[A-Za-z]:")
-    then
-        return "carven: " .. description .. " is not a normalized relative path"
-    end
-    if value:find("[%z\1-\31\127]") then
-        return "carven: " .. description .. " contains a control character"
-    end
-    for component in value:gmatch("[^/]+") do
-        if component == "." or component == ".." then
-            return "carven: " .. description .. " contains '.' or '..'"
-        end
-    end
-    if value:find("//", 1, true) then
-        return "carven: " .. description .. " contains an empty component"
-    end
-    return nil
-end
-
-local function parse_artifact_receipt(receipt_file, file_io)
-    if not os.exists(receipt_file) then
-        return nil, "carven: artifact receipt does not exist: " .. receipt_file
-    end
-    if not os.isfile(receipt_file) then
-        return nil, "carven: artifact receipt is not a file: " .. receipt_file
-    end
-    local content, read_error = file_io.readfile(receipt_file)
-    if not content then
-        return nil, "carven: cannot read artifact receipt: " .. tostring(read_error)
-    end
-    if content:sub(-1) ~= "\n" then
-        return nil, "carven: artifact receipt must end with a newline"
-    end
-    local lines = {}
-    for line in content:gmatch("([^\n]*)\n") do
-        table.insert(lines, line)
-    end
-    if lines[1] ~= artifact_receipt_header then
-        return nil, "carven: invalid artifact receipt header"
-    end
-
-    local artifacts = {}
-    local previous_path = nil
-    local accepted_paths = {}
-    for index = 2, #lines do
-        local logical_path = lines[index]
-        if logical_path:find("\t", 1, true) then
-            return nil, "carven: artifact receipt path contains a tab"
-        end
-        local path_error = validate_relative_path(logical_path, "artifact logical path")
-        if path_error then
-            return nil, path_error
-        end
-        if logical_path == artifact_receipt_name or
-            logical_path:sub(1, #artifact_receipt_name + 1) == artifact_receipt_name .. "/"
+local function has_cpp_language(target)
+    for _, language in ipairs(table.wrap(target:get("languages"))) do
+        if language:match("^c%+%+") or language:match("^cxx") or
+            language:match("^gnu%+%+") or language:match("^gnuxx")
         then
-            return nil, "carven: artifact receipt cannot own itself"
+            return true
         end
-        if previous_path ~= nil and previous_path >= logical_path then
-            return nil, "carven: artifact receipt paths are not sorted and unique"
-        end
-        local separator = logical_path:find("/", 1, true)
-        while separator do
-            if accepted_paths[logical_path:sub(1, separator - 1)] then
-                return nil, "carven: artifact receipt contains a path below an owned file"
-            end
-            separator = logical_path:find("/", separator + 1, true)
-        end
-        accepted_paths[logical_path] = true
-        previous_path = logical_path
-        table.insert(artifacts, logical_path)
     end
-    return artifacts
+    return false
+end
+
+local function project_source_argument(sourcefile, path_api)
+    local projectdir = os.projectdir()
+    local source_argument = path_api.unix(path_api.relative(
+        path_api.absolute(sourcefile, projectdir),
+        projectdir
+    ))
+    if path_api.is_absolute(source_argument) or
+        source_argument == ".." or source_argument:sub(1, 3) == "../"
+    then
+        return nil, "carven: source path is outside the Xmake project: " .. tostring(sourcefile)
+    end
+    return source_argument
+end
+
+local function scan_artifacts(root, path_api, os_api)
+    local logical_paths = {}
+    if not os_api.isdir(root) then
+        return logical_paths
+    end
+    for _, artifact_file in ipairs(os_api.files(path_api.join(root, "**"))) do
+        if os_api.isfile(artifact_file) then
+            local logical_path = path_api.unix(path_api.relative(artifact_file, root))
+            table.insert(logical_paths, logical_path)
+        end
+    end
+    table.sort(logical_paths)
+    return logical_paths
+end
+
+local function equal_paths(left, right)
+    if #left ~= #right then
+        return false
+    end
+    for index, left_path in ipairs(left) do
+        if left_path ~= right[index] then
+            return false
+        end
+    end
+    return true
+end
+
+local function sync_artifacts(staging_root, live_root, path_api, os_api)
+    local desired_paths = scan_artifacts(staging_root, path_api, os_api)
+    local current_paths = scan_artifacts(live_root, path_api, os_api)
+    if not equal_paths(desired_paths, current_paths) then
+        os_api.tryrm(live_root)
+    end
+    os_api.mkdir(live_root)
+
+    for _, logical_path in ipairs(desired_paths) do
+        local source_file = path_api.join(staging_root, logical_path)
+        local destination_file = path_api.join(live_root, logical_path)
+        os_api.mkdir(path_api.directory(destination_file))
+        os_api.cp(source_file, destination_file, {copy_if_different = true})
+    end
+    return desired_paths
 end
 
 local function make_invocation(target, sourcebatch, path_api)
@@ -122,21 +81,17 @@ local function make_invocation(target, sourcebatch, path_api)
     table.sort(sourcefiles)
 
     local source_arguments = {}
-    local projectdir = os.projectdir()
     for _, sourcefile_cv in ipairs(sourcefiles) do
-        local source_argument = path_api.unix(path_api.relative(
-            path_api.absolute(sourcefile_cv, projectdir),
-            projectdir
-        ))
-        local source_error = validate_relative_path(source_argument, "Carven source path")
+        local source_argument, source_error = project_source_argument(sourcefile_cv, path_api)
         if source_error then
-            return nil, source_error .. ": " .. tostring(sourcefile_cv)
+            return nil, source_error
         end
         table.insert(source_arguments, source_argument)
     end
     table.sort(source_arguments)
 
-    local outputdir = target:autogendir()
+    local live_root = path_api.join(target:autogendir(), "rules", "carven")
+    local staging_root = path_api.join(target:autogendir(), "rules", "carven.staging")
     local program = target:data("carven.program")
     if not program then
         return nil, "carven rule was not configured"
@@ -145,7 +100,7 @@ local function make_invocation(target, sourcebatch, path_api)
     local linkage_domain = target:data("carven.linkage_domain")
     local argv = {
         "--output-dir",
-        tostring(path_api(outputdir)),
+        tostring(path_api(staging_root)),
         "--linkage-domain",
         linkage_domain,
     }
@@ -158,17 +113,16 @@ local function make_invocation(target, sourcebatch, path_api)
         table.insert(argv, source_argument)
     end
 
-    local depvalues = {artifact_receipt_header, tostring(program)}
+    local depvalues = {tostring(program)}
     for _, argument in ipairs(argv) do
         table.insert(depvalues, argument)
     end
 
     return {
         program = program,
-        outputdir = outputdir,
-        receipt_file = path_api.join(outputdir, artifact_receipt_name),
+        live_root = live_root,
+        staging_root = staging_root,
         sourcefiles = sourcefiles,
-        rule_file = rule_file,
         argv = argv,
         depvalues = depvalues,
         dependfile = target:dependfile(target:autogenfile("carven.compile")),
@@ -178,12 +132,11 @@ end
 local function invocation_depfiles(invocation, artifact_paths, path_api)
     local depfiles = {}
     table.join2(depfiles, invocation.sourcefiles)
-    table.insert(depfiles, invocation.receipt_file)
     for _, logical_path in ipairs(artifact_paths) do
-        table.insert(depfiles, path_api.join(invocation.outputdir, logical_path))
+        table.insert(depfiles, path_api.join(invocation.live_root, logical_path))
     end
     table.insert(depfiles, invocation.program)
-    table.insert(depfiles, invocation.rule_file)
+    table.insert(depfiles, rule_file)
     return depfiles
 end
 
@@ -204,24 +157,7 @@ rule("carven.build")
         linkage_domain = linkage_domain
                     or (path.absolute(os.projectdir()) .. ":" .. target:fullname())
 
-        local cpp_standard
-        for _, language in ipairs(table.wrap(target:get("languages"))) do
-            local normalized, language_error = normalize_cpp_language(language)
-            if language_error then
-                raise(language_error)
-            end
-            if normalized then
-                if cpp_standard and cpp_standard ~= normalized then
-                    raise(string.format(
-                        "carven: conflicting C++ target languages normalize to '%s' and '%s'",
-                        cpp_standard,
-                        normalized
-                    ))
-                end
-                cpp_standard = normalized
-            end
-        end
-        if not cpp_standard then
+        if not has_cpp_language(target) then
             target:add("languages", "c++20")
         end
 
@@ -251,17 +187,23 @@ rule("carven.build")
         target:data_set("carven.tests", tests)
         target:data_set("carven.linkage_domain", linkage_domain)
 
+        local live_root = path.join(target:autogendir(), "rules", "carven")
         target:add("includedirs", includedir)
-        target:add("includedirs", target:autogendir())
+        target:add("includedirs", live_root)
 
         for _, sourcefile_cv in ipairs(target:sourcefiles()) do
             if path.extension(sourcefile_cv) == ".cv" then
-                local sourcefile_cpp = target:autogenfile((sourcefile_cv:gsub("%.cv$", ".cpp")))
+                local source_argument, source_error = project_source_argument(sourcefile_cv, path)
+                if source_error then
+                    raise(source_error)
+                end
+                local generated_argument = (source_argument:gsub("%.cv$", ".cpp"))
+                local sourcefile_cpp = path.join(live_root, generated_argument)
                 target:add("files", sourcefile_cpp, {always_added = true})
             end
         end
         if tests == "default" then
-            target:add("files", path.join(target:autogendir(), "carven-test-main.cpp"), {
+            target:add("files", path.join(live_root, "carven-test-main.cpp"), {
                 always_added = true,
             })
         end
@@ -308,18 +250,35 @@ rule("carven.build")
                     invocation.program
                 ))
             end
-            os.mkdir(invocation.outputdir)
-            os.vrunv(invocation.program, invocation.argv, {curdir = os.projectdir()})
 
-            local current_artifact_paths, receipt_error =
-                parse_artifact_receipt(invocation.receipt_file, io)
-            if not current_artifact_paths then
-                raise(receipt_error)
-            end
-            depend.save({
-                files = invocation_depfiles(invocation, current_artifact_paths, path),
-                values = invocation.depvalues,
-            }, invocation.dependfile)
+            os.tryrm(invocation.dependfile)
+            try
+            {
+                function ()
+                    os.tryrm(invocation.staging_root)
+                    os.mkdir(invocation.staging_root)
+                    os.vrunv(invocation.program, invocation.argv, {curdir = os.projectdir()})
+                    local desired_paths = sync_artifacts(
+                        invocation.staging_root,
+                        invocation.live_root,
+                        path,
+                        os
+                    )
+                    depend.save({
+                        files = invocation_depfiles(invocation, desired_paths, path),
+                        values = invocation.depvalues,
+                    }, invocation.dependfile)
+                end,
+                finally
+                {
+                    function (ok, errors)
+                        os.tryrm(invocation.staging_root)
+                        if not ok then
+                            raise(errors)
+                        end
+                    end
+                }
+            }
         end)
     end, {jobgraph = true})
 

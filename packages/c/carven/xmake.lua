@@ -1,7 +1,9 @@
 package("carven")
+    set_xmakever("3.0.4")
     set_kind("toolchain")
     set_homepage("https://github.com/ryblust/carven")
     set_description("The Carven source-to-C++ compiler")
+    set_license("MIT")
 
     add_configs("rules_only", {
         description = "Install only the Carven xmake rules",
