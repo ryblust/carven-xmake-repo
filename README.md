@@ -22,8 +22,8 @@ target-private live root `<autogendir>/rules/carven`. Source paths are relative
 to the Xmake project directory and mirrored below that root. A root-level
 `main.cv` generates `<live-root>/main.cpp`, while `src/app/main.cv` generates
 `<live-root>/src/app/main.cpp`. Published semantic surfaces are emitted as
-target-private component headers at the lexicographically first source anchor,
-such as `<live-root>/src/app/main.carven-interface.hpp`. Each generated
+target-private component headers below the reserved `carven/generated/` include
+hierarchy, such as `<live-root>/carven/generated/src/app/main.hpp`. Each generated
 implementation includes its own surface component, when present, and the
 external components it actually uses. Input source directories are not added
 as C++ include directories. Generated `.cpp` files are registered as ordinary
