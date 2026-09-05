@@ -101,11 +101,13 @@ target("app-test")
     add_tests("default")
 ```
 
-`tests = "default"` emits inline tests and registers Carven's generated runner.
-`tests = "external"` emits inline tests without a runner; the target supplies an
-ordinary C++ runner with `add_files`. Omitting `tests` emits no tests. These are
-the only accepted modes. The rule does not discover test files, copy or compile a
-runner path, create targets, or call `add_tests`.
+`tests = "default"` emits inline tests, the generated runner header, and the
+generated entry. `tests = "external"` emits inline tests and the generated
+runner header without a generated entry; the target supplies its own process
+entry, which may be an ordinary C++ source added with `add_files` or a Carven
+`main`. Omitting `tests` emits no tests. These are the only accepted modes. The
+rule does not discover test files, copy or compile an external entry path,
+create targets, or call `add_tests`.
 
 To test unpublished package or rule changes from a Carven checkout, point that
 checkout at this local repository and force xmake to reinstall the rules-only
@@ -118,11 +120,10 @@ CARVEN_XMAKE_REPO_DIR=/path/to/carven-xmake-repo xmake build
 CARVEN_XMAKE_REPO_DIR=/path/to/carven-xmake-repo xmake test
 ```
 
-Before the first versioned package is published, the rule contract smoke stays
-in the Carven checkout. This lets one test run the locally built compiler and
-the unpublished packaged rule together without first publishing or pinning a
-package version. The smoke protects current build invariants rather than any
-pre-release rule layout or compatibility behavior.
+The rule-contract smoke lives in the Carven checkout and runs the locally built
+compiler with the locally installed packaged rule. It protects the current
+build invariants defined above; package-repository layout is not part of that
+contract.
 
 The build step before testing is required. Generation runs in Xmake's prepare
 phase so named-module scanning can consume generated files; a compiler target

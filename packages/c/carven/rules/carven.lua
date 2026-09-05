@@ -101,8 +101,7 @@ local function make_invocation(target, sourcebatch, path_api)
     local argv = {
         "--output-dir",
         tostring(path_api(staging_root)),
-        "--linkage-domain",
-        linkage_domain,
+        "--linkage-domain=" .. linkage_domain,
     }
     if tests == "default" then
         table.insert(argv, "--tests=default")
@@ -203,7 +202,12 @@ rule("carven.build")
             end
         end
         if tests == "default" then
-            target:add("files", path.join(live_root, "carven-test-main.cpp"), {
+            target:add("files", path.join(
+                live_root,
+                "carven",
+                "generated",
+                "carven-test-main.cpp"
+            ), {
                 always_added = true,
             })
         end
