@@ -44,29 +44,25 @@ local function scan_artifacts(root, path_api, os_api)
     return logical_paths
 end
 
-local function equal_paths(left, right)
-    if #left ~= #right then
-        return false
-    end
-    for index, left_path in ipairs(left) do
-        if left_path ~= right[index] then
-            return false
-        end
-    end
-    return true
-end
-
 local function sync_artifacts(staging_root, live_root, path_api, os_api)
     local desired_paths = scan_artifacts(staging_root, path_api, os_api)
-    local current_paths = scan_artifacts(live_root, path_api, os_api)
-    if not equal_paths(desired_paths, current_paths) then
-        os_api.tryrm(live_root)
+    local desired = {}
+    for _, logical_path in ipairs(desired_paths) do
+        desired[logical_path] = true
+    end
+    for _, logical_path in ipairs(scan_artifacts(live_root, path_api, os_api)) do
+        if not desired[logical_path] then
+            os_api.rm(path_api.join(live_root, logical_path))
+        end
     end
     os_api.mkdir(live_root)
 
     for _, logical_path in ipairs(desired_paths) do
         local source_file = path_api.join(staging_root, logical_path)
         local destination_file = path_api.join(live_root, logical_path)
+        if os_api.isdir(destination_file) then
+            os_api.rm(destination_file)
+        end
         os_api.mkdir(path_api.directory(destination_file))
         os_api.cp(source_file, destination_file, {copy_if_different = true})
     end

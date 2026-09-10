@@ -81,11 +81,10 @@ changed `.cv` still runs one complete Carven batch, while content-identical
 artifacts retain their mtimes so downstream C++ compilation only rebuilds units
 whose generated content changed. This is content-stable incremental
 materialization, not compiler-level incremental analysis. After successful
-generation, Xmake compares the sorted staging and live artifact paths. An
-unchanged path set is promoted file by file with `copy_if_different`; a changed
-path set replaces the target-private live tree before promotion. This keeps the
-ordinary implementation-edit path content-stable while treating structural
-output changes as a coarse rebuild. A failed Carven invocation discards staging
+generation, Xmake removes only live files absent from staging, then promotes
+each staged file with `copy_if_different`. Unchanged files retain their mtimes
+even when other artifacts are added or removed. Empty directories that conflict
+with a new file are removed before promotion. A failed Carven invocation discards staging
 without modifying live output. A failed promotion leaves the dependency cache
 invalid so the next build repairs any partial update. Changing only the
 installed rule file also invalidates the generation job.
