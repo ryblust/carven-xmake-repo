@@ -27,7 +27,7 @@ package("carven")
         if not package:config("rules_only") then
             import("package.tools.xmake").install(
                 package,
-                {kind = "binary", build_tests = "n"},
+                {kind = "binary"},
                 {target = "carven"}
             )
         end

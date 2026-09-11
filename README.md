@@ -93,6 +93,7 @@ Inline-test targets use ordinary xmake target and test registration concepts:
 
 ```lua
 target("app-test")
+    set_default(false)
     set_kind("binary")
     add_packages("carven")
     add_rules("@carven/carven", {tests = "default"})
@@ -143,8 +144,5 @@ Without `CARVEN_SOURCE_DIR`, a complete package installation obtains the Carven
 source from GitHub. Rules-only installations do not use Carven source and
 therefore ignore `CARVEN_SOURCE_DIR`.
 
-Complete package installation configures the Carven source build with
-`build_tests=n`. The package only needs the `carven` executable and runtime
-headers, so repository test targets and their rules-only package dependency are
-excluded from package configuration. This also prevents the source build from
-recursively requesting the rules-only variant of the package being installed.
+A complete installation selects the source project's `carven` target and
+installs the compiler and runtime headers.
