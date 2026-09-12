@@ -15,18 +15,19 @@ local function has_cpp_language(target)
     return false
 end
 
-local function project_source_argument(sourcefile, path_api)
+local function source_input(sourcefile, path_api, installed_sources)
     local projectdir = os.projectdir()
-    local source_argument = path_api.unix(path_api.relative(
-        path_api.absolute(sourcefile, projectdir),
-        projectdir
-    ))
-    if path_api.is_absolute(source_argument) or
-        source_argument == ".." or source_argument:sub(1, 3) == "../"
-    then
-        return nil, "carven: source path is outside the Xmake project: " .. tostring(sourcefile)
+    local physical_path = path_api.unix(path_api.absolute(sourcefile, projectdir))
+    local source_argument = path_api.unix(path_api.relative(physical_path, projectdir))
+    local installed_prefix = path_api.unix(installed_sources) .. "/"
+    if physical_path:sub(1, #installed_prefix) == installed_prefix then
+        return physical_path, nil, physical_path:match("/(crafts/.*)$")
     end
-    return source_argument
+    if not path_api.is_absolute(source_argument) and
+        source_argument ~= ".." and source_argument:sub(1, 3) ~= "../" then
+        return source_argument, nil, source_argument
+    end
+    return nil, "carven: source path is outside the project and crafts: " .. tostring(sourcefile)
 end
 
 local function scan_artifacts(root, path_api, os_api)
@@ -78,7 +79,7 @@ local function make_invocation(target, sourcebatch, path_api)
 
     local source_arguments = {}
     for _, sourcefile_cv in ipairs(sourcefiles) do
-        local source_argument, source_error = project_source_argument(sourcefile_cv, path_api)
+        local source_argument, source_error = source_input(sourcefile_cv, path_api, target:data("carven.installed_sources"))
         if source_error then
             return nil, source_error
         end
@@ -139,7 +140,7 @@ rule("carven.build")
     set_extensions(".cv")
 
     on_config(function (target)
-        import("lib.detect.find_tool")
+        import("core.project.project")
 
         local tests = rule_option(target, "tests")
         if tests ~= nil and tests ~= "default" and tests ~= "external" then
@@ -157,42 +158,51 @@ rule("carven.build")
         end
 
         local carven_program = target:values("carven.program")
-        local includedir = target:values("carven.includedir")
-        if not carven_program or not includedir then
-            local carven_package = target:pkg("carven")
-            if not carven_package then
-                raise("please add_packages(\"carven\") or set local Carven program and include values")
+        local craftsdir = target:values("carven.craftsdir")
+        if not carven_program or not craftsdir then
+            local carven_package = assert(project.required_package("carven"), "carven package is required")
+            if carven_package:requireconf("configs", "rules_only") then
+                local compiler = assert(project.target("carven"), "rules_only requires a local compiler target or explicit toolchain paths")
+                carven_program = carven_program or compiler:targetfile()
+                craftsdir = craftsdir or path.join(os.projectdir(), "crafts")
+            else
+                local prefix = carven_package:installdir()
+                carven_program = carven_program or path.join(prefix, "bin", is_host("windows") and "carven.exe" or "carven")
+                craftsdir = craftsdir or path.join(prefix, "crafts")
             end
-            if not carven_program then
-                local envs = os.joinenvs(target:pkgenvs(), os.getenvs())
-                local carven_tool = find_tool("carven", {envs = envs, force = true, norun = true})
-                if not carven_tool then
-                    raise("carven: executable not found in package or system PATH")
-                end
-                carven_program = carven_tool.program
-            end
-            includedir = includedir or path.join(carven_package:installdir(), "include")
         end
-
         carven_program = path.absolute(carven_program, os.projectdir())
-        includedir = path.absolute(includedir, os.projectdir())
+        craftsdir = path.absolute(craftsdir, os.projectdir())
 
         target:data_set("carven.program", carven_program)
-        target:data_set("carven.includedir", includedir)
+        local installed_sources = path.join(craftsdir, "carven")
+        target:data_set("carven.installed_sources", installed_sources)
+        local craft_roots = table.unique({installed_sources, path.join(os.projectdir(), "crafts")})
         target:data_set("carven.tests", tests)
         target:data_set("carven.linkage_domain", linkage_domain)
 
         local live_root = path.join(target:autogendir(), "rules", "carven")
-        target:add("includedirs", includedir)
         target:add("includedirs", live_root)
+
+        for _, root in ipairs(table.unique({craftsdir, path.join(os.projectdir(), "crafts")})) do
+            target:add("includedirs", root)
+        end
+        for _, root in ipairs(craft_roots) do
+            for _, extension in ipairs({".cv", ".cpp"}) do
+                local files = os.files(path.join(root, "**" .. extension))
+                if #files > 0 then
+                    target:add("files", table.unpack(files))
+                end
+            end
+        end
 
         for _, sourcefile_cv in ipairs(target:sourcefiles()) do
             if path.extension(sourcefile_cv) == ".cv" then
-                local source_argument, source_error = project_source_argument(sourcefile_cv, path)
+                local _, source_error, logical_path = source_input(sourcefile_cv, path, installed_sources)
                 if source_error then
                     raise(source_error)
                 end
-                local generated_argument = (source_argument:gsub("%.cv$", ".cpp"))
+                local generated_argument = (logical_path:gsub("%.cv$", ".cpp"))
                 local sourcefile_cpp = path.join(live_root, generated_argument)
                 target:add("files", sourcefile_cpp, {always_added = true})
             end
@@ -221,10 +231,6 @@ rule("carven.build")
         if not invocation then
             return
         end
-        if not target:data("carven.includedir") then
-            raise("carven rule was not configured")
-        end
-
         jobgraph:add(target:fullname() .. "/carven.generate", function (index, total, jobopt)
             local cached = depend.load(invocation.dependfile) or {}
             local changed = target:is_rebuilt() or depend.is_changed(cached, {
