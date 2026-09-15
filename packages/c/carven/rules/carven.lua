@@ -96,6 +96,7 @@ local function make_invocation(target, sourcebatch, path_api)
     local tests = target:data("carven.tests")
     local linkage_domain = target:data("carven.linkage_domain")
     local argv = {
+        "compile",
         "--output-dir",
         tostring(path_api(staging_root)),
         "--linkage-domain=" .. linkage_domain,
