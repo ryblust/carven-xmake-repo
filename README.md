@@ -80,6 +80,17 @@ add_rules("@carven/carven", {linkage_domain = "my-project:stable-domain"})
 The domain value and all other compiler arguments participate in the generation
 dependency values; changing it regenerates the batch.
 
+Enable Carven timing reports:
+
+```lua
+add_rules("@carven/carven", {timings = true})
+```
+
+`timings` accepts a Boolean and defaults to disabled. It passes `--timings` to
+Carven and forwards the invocation's stderr under its target name after exit.
+Changing the option invalidates the generation dependency record. Reused
+generation emits no report.
+
 The compiler repository uses `rules_only = true` while building its own compiler.
 In this mode, the rule uses the project's `carven` target and project-root
 `crafts/`. Integration projects can reuse the same rules package and set

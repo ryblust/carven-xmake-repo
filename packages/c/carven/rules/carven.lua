@@ -101,6 +101,9 @@ local function make_invocation(target, sourcebatch, path_api)
         tostring(path_api(staging_root)),
         "--linkage-domain=" .. linkage_domain,
     }
+    if target:data("carven.timings") then
+        table.insert(argv, "--timings")
+    end
     if tests == "default" then
         table.insert(argv, "--tests=default")
     elseif tests == "external" then
@@ -121,6 +124,7 @@ local function make_invocation(target, sourcebatch, path_api)
         staging_root = staging_root,
         sourcefiles = sourcefiles,
         argv = argv,
+        timings = target:data("carven.timings"),
         depvalues = depvalues,
         dependfile = target:dependfile(target:autogenfile("carven.compile")),
     }
@@ -143,6 +147,10 @@ rule("carven.build")
     on_config(function (target)
         import("core.project.project")
 
+        local timings = rule_option(target, "timings")
+        if timings ~= nil and type(timings) ~= "boolean" then
+            raise("carven: timings must be a boolean")
+        end
         local tests = rule_option(target, "tests")
         if tests ~= nil and tests ~= "default" and tests ~= "external" then
             raise("carven: tests must be 'default' or 'external'")
@@ -180,6 +188,7 @@ rule("carven.build")
         target:data_set("carven.installed_sources", installed_sources)
         local craft_roots = table.unique({installed_sources, path.join(os.projectdir(), "crafts")})
         target:data_set("carven.tests", tests)
+        target:data_set("carven.timings", timings)
         target:data_set("carven.linkage_domain", linkage_domain)
 
         local live_root = path.join(target:autogendir(), "rules", "carven")
@@ -259,12 +268,16 @@ rule("carven.build")
             end
 
             os.tryrm(invocation.dependfile)
+            local stderr_file = invocation.timings and os.tmpfile() or nil
             try
             {
                 function ()
                     os.tryrm(invocation.staging_root)
                     os.mkdir(invocation.staging_root)
-                    os.vrunv(invocation.program, invocation.argv, {curdir = os.projectdir()})
+                    os.vrunv(invocation.program, invocation.argv, {
+                        curdir = os.projectdir(),
+                        stderr = stderr_file,
+                    })
                     local desired_paths = sync_artifacts(
                         invocation.staging_root,
                         invocation.live_root,
@@ -279,6 +292,16 @@ rule("carven.build")
                 finally
                 {
                     function (ok, errors)
+                        if stderr_file then
+                            -- Keep each invocation's output intact across parallel targets.
+                            local output = io.readfile(stderr_file) or ""
+                            if output ~= "" then
+                                io.stderr:write("\ncarven target: " .. target:fullname() .. "\n"
+                                    .. output:gsub("^\r?\n", ""))
+                                io.stderr:flush()
+                            end
+                            os.tryrm(stderr_file)
+                        end
                         os.tryrm(invocation.staging_root)
                         if not ok then
                             raise(errors)
