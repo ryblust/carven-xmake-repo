@@ -2,7 +2,8 @@ local function rule_option(target, name)
     return target:extraconf("rules", "@carven/carven", name)
 end
 
-local rule_file = path.join(os.scriptdir(), "carven.lua")
+local rule_file = path.join(os.scriptdir(), "xmake.lua")
+local stdlib_file = path.join(os.scriptdir(), "stdlib.lua")
 
 local function has_cpp_language(target)
     for _, language in ipairs(table.wrap(target:get("languages"))) do
@@ -97,10 +98,21 @@ local function make_invocation(target, sourcebatch, path_api)
     local linkage_domain = target:data("carven.linkage_domain")
     local argv = {
         "compile",
+        "--explicit-inputs",
         "--output-dir",
         tostring(path_api(staging_root)),
         "--linkage-domain=" .. linkage_domain,
     }
+    local library_modules = target:data("carven.library_modules")
+    if library_modules then
+        table.insert(argv, "--library-domain=" .. target:data("carven.library_domain"))
+        for _, module in ipairs(library_modules) do
+            table.insert(argv, "--library-module=" .. module)
+        end
+        if target:data("carven.stdlib_node") then
+            table.insert(argv, "--emit-library")
+        end
+    end
     if target:data("carven.timings") then
         table.insert(argv, "--timings")
     end
@@ -138,20 +150,24 @@ local function invocation_depfiles(invocation, artifact_paths, path_api)
     end
     table.insert(depfiles, invocation.program)
     table.insert(depfiles, rule_file)
+    table.insert(depfiles, stdlib_file)
     return depfiles
 end
 
 rule("carven.build")
     set_extensions(".cv")
 
-    on_config(function (target)
+    on_config(function (target, opt)
         import("core.project.project")
 
         local timings = rule_option(target, "timings")
         if timings ~= nil and type(timings) ~= "boolean" then
             raise("carven: timings must be a boolean")
         end
-        local tests = rule_option(target, "tests")
+        local is_stdlib = target:data("carven.stdlib_node")
+        local pcheader = target:data("carven.pcheader") or target:pcheaderfile("cxx")
+        if pcheader then target:data_set("carven.pcheader", path.absolute(pcheader)) end
+        local tests = not is_stdlib and rule_option(target, "tests") or nil
         if tests ~= nil and tests ~= "default" and tests ~= "external" then
             raise("carven: tests must be 'default' or 'external'")
         end
@@ -162,7 +178,7 @@ rule("carven.build")
         linkage_domain = linkage_domain
                     or (path.absolute(os.projectdir()) .. ":" .. target:fullname())
 
-        if not has_cpp_language(target) then
+        if not is_stdlib and not has_cpp_language(target) then
             target:add("languages", "c++20")
         end
 
@@ -186,7 +202,20 @@ rule("carven.build")
         target:data_set("carven.program", carven_program)
         local installed_sources = path.join(craftsdir, "carven")
         target:data_set("carven.installed_sources", installed_sources)
-        local craft_roots = table.unique({installed_sources, path.join(os.projectdir(), "crafts")})
+        local project_crafts = path.join(os.projectdir(), "crafts")
+        local craft_roots = is_stdlib and {installed_sources}
+            or table.unique({installed_sources, project_crafts})
+        do
+            local modules = {}
+            for _, source in ipairs(os.files(path.join(installed_sources, "**.cv"))) do
+                local _, source_error, logical = source_input(source, path, installed_sources)
+                assert(not source_error, source_error)
+                table.insert(modules, (logical:gsub("%.cv$", ""):gsub("/", ".")))
+            end
+            table.sort(modules)
+            assert(#modules > 0, "carven: installed standard library has no Carven sources: " .. installed_sources)
+            target:data_set("carven.library_modules", modules)
+        end
         target:data_set("carven.tests", tests)
         target:data_set("carven.timings", timings)
         target:data_set("carven.linkage_domain", linkage_domain)
@@ -194,14 +223,17 @@ rule("carven.build")
         local live_root = path.join(target:autogendir(), "rules", "carven")
         target:add("includedirs", live_root)
 
-        for _, root in ipairs(table.unique({craftsdir, path.join(os.projectdir(), "crafts")})) do
-            target:add("includedirs", root)
+        for _, root in ipairs(is_stdlib and {craftsdir} or table.unique({craftsdir, project_crafts})) do
+            if os.isdir(root) then target:add("includedirs", root) end
         end
         for _, root in ipairs(craft_roots) do
             for _, extension in ipairs({".cv", ".cpp"}) do
                 local files = os.files(path.join(root, "**" .. extension))
-                if #files > 0 then
-                    target:add("files", table.unpack(files))
+                for _, source in ipairs(files) do
+                    local installed = path.unix(path.absolute(source)):startswith(path.unix(installed_sources) .. "/")
+                    if extension == ".cv" or is_stdlib or not installed then
+                        target:add("files", source)
+                    end
                 end
             end
         end
@@ -214,7 +246,10 @@ rule("carven.build")
                 end
                 local generated_argument = (logical_path:gsub("%.cv$", ".cpp"))
                 local sourcefile_cpp = path.join(live_root, generated_argument)
-                target:add("files", sourcefile_cpp, {always_added = true})
+                local installed = path.unix(path.absolute(sourcefile_cv)):startswith(path.unix(installed_sources) .. "/")
+                if not installed or is_stdlib then
+                    target:add("files", sourcefile_cpp, {always_added = true})
+                end
             end
         end
         if tests == "default" then
@@ -251,6 +286,7 @@ rule("carven.build")
                 return
             end
 
+            progress.set_target(jobopt.progress, target)
             progress.show(
                 jobopt.progress or 0,
                 "${color.build.object}compiling.cv %s",
@@ -313,8 +349,11 @@ rule("carven.build")
     end, {jobgraph = true})
 
 rule("carven")
+    after_config(function (target, opt)
+        import("stdlib", {rootdir = path.directory(rule_file)}).attach(target, opt)
+    end)
     add_deps("@carven/carven.build")
-    add_deps("utils.compiler.runtime")
-    add_deps("utils.inherit.links")
-    add_deps("utils.merge.object", "utils.merge.archive")
-    add_deps("utils.symbols.extract")
+    add_deps("c++")
+    add_orders("@carven/carven.build", "c++.build")
+    add_orders("@carven/carven.build", "c++.build.pcheader")
+    add_orders("c++", "@carven/carven")

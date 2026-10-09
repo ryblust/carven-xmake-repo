@@ -15,12 +15,14 @@ target("app")
 ```
 
 The rule configures the compiler and Crafts paths automatically. Projects list
-their application sources with ordinary Xmake target settings.
+their application sources with ordinary Xmake target settings; they do not need
+to create a local `crafts/` directory.
 
-The rule requires Xmake 3.0.4 or newer. It passes every target `.cv` input to
-one deterministic Carven invocation before compiling generated C++. The target's
-inputs include the `.cv` sources from the installed toolchain `crafts/carven/` and an
-existing project-root `crafts/`. Carven writes into a disposable staging
+The rule requires Xmake 3.1.1 or newer. It passes every target `.cv` input to
+one deterministic Carven invocation before compiling generated C++. Every
+invocation passes `--explicit-inputs`, so the compiler uses exactly the source
+batch selected by the rule. Inputs include installed `crafts/carven/` sources
+and sources from an existing project-root `crafts/`. Carven writes into a disposable staging
 directory; Xmake promotes the result into the
 target-private live root `<autogendir>/rules/carven`. Application source paths
 are relative to the Xmake project directory and mirrored below that root. Installed
@@ -31,7 +33,8 @@ component are preserved below the generated directory. A root-level
 target-private component headers below the reserved `carven/generated/` include
 hierarchy, such as `<live-root>/carven/generated/src/app/main.hpp`. Each generated
 implementation includes its own surface component, when present, and the
-external components it actually uses. The installed and project-root `crafts/` directories are C++ include directories.
+external components it actually uses. Installed and project-root `crafts/`
+directories are C++ include directories.
 Other input source directories are not added as C++ include directories. Generated
 `.cpp` files are registered as ordinary xmake C++ sources, so xmake owns compiler
 dependency scanning, compiler-option invalidation, build caching, and incremental
@@ -41,8 +44,7 @@ Generation runs through `before_prepare_files`, xmake's job graph, and
 `core.project.depend`. Xmake's C++ named-module scanner runs in the main prepare
 phase and scans ordinary `.cpp` consumers as well as module interface units.
 The prepare-stage boundary therefore guarantees that generated C++ and headers
-exist before the scanner starts, without coupling the packaged rule to the
-scanner's internal rule name or translating generation into batch commands.
+exist before the scanner starts.
 
 The target's C++ language configuration belongs entirely to xmake and its C++
 toolchain; it is not passed to Carven. Carven-generated code requires at least
@@ -57,14 +59,12 @@ invocation and generated source list; source edits and native header dependencie
 use the existing generation and C++ dependency tracking. Duplicate module paths
 are compiler errors, including conflicts between project and installed crafts.
 
-Users list only application sources in `add_files`.
 The compiler and its matching crafts are installed together at `bin/carven` and
 `crafts/` below the package prefix. The rule obtains both locations from the
 required package; consumers do not configure toolchain paths.
 
-Generated interface components remain private to their target. Cross-target
-generated header publication and C++ module consumers are not part of the
-integration contract.
+Generated interface components remain private to their target. The installed
+standard library has a separate native object dependency.
 
 The rule passes a stable linkage domain on every compiler invocation. Its
 default is the normalized absolute project directory plus `target:fullname()`,
@@ -80,6 +80,40 @@ add_rules("@carven/carven", {linkage_domain = "my-project:stable-domain"})
 The domain value and all other compiler arguments participate in the generation
 dependency values; changing it regenerates the batch.
 
+## Installed standard library
+
+The rule automatically compiles installed `crafts/carven` implementations and
+native runtime sources into object dependencies. Targets share an object
+dependency when their Carven installation, native compiler, toolchain, C++
+compilation settings, and prerequisite targets match. Xmake supplies the effective
+compiler flags, including language, macros, include paths, runtime, and
+instruction-set settings. Configure these through ordinary target settings:
+
+```lua
+target("portable-app")
+    set_kind("binary")
+    add_defines("CARVEN_SIMD_FORCE_PORTABLE")
+    add_rules("@carven/carven")
+    add_files("main.cv")
+```
+
+Different compilation environments receive separate dependencies automatically.
+The dependency uses the toolchain's shared-library compilation settings so its
+objects can be consumed by executables and shared libraries. Project-local Crafts
+remain application target inputs. The object dependency retains the consumer's
+prerequisite targets. Generated headers therefore belong to producer targets
+connected through ordinary `add_deps`. Precompiled-header source is included
+with the library compilation; its compiled cache remains target-local.
+
+Installed modules have a linkage domain independent of the application domain
+and test mode. Each consumer analyzes the complete source batch and emits its
+interfaces and requested inline static instances. The library dependency emits
+installed implementations from its closed source batch, without inline tests or
+an entry point. Xmake owns native compilation, dependency scanning, caching,
+object reuse, and linking.
+
+## Timing
+
 Enable Carven timing reports:
 
 ```lua
@@ -91,30 +125,21 @@ Carven and forwards the invocation's stderr under its target name after exit.
 Changing the option invalidates the generation dependency record. Reused
 generation emits no report.
 
-The compiler repository uses `rules_only = true` while building its own compiler.
-In this mode, the rule uses the project's `carven` target and project-root
-`crafts/`. Integration projects can reuse the same rules package and set
-`carven.program` to a local compiler and `carven.craftsdir` to its matching
-`crafts/` directory. Consumer projects normally use the complete package.
+## Incremental generation
 
-The compiler program,
-complete sorted `.cv` input set, full invocation, installed rule file, and every live generated artifact
-participate in generation dependency checks. Generated C++ includes its runtime
-and interface components normally, so
-xmake's C++ dependency scanner discovers the component graph and owns header
-invalidation. Removing any generated file causes the complete
-source batch to be regenerated before incremental C++ compilation resumes. A
-changed `.cv` still runs one complete Carven batch, while content-identical
-artifacts retain their mtimes so downstream C++ compilation only rebuilds units
-whose generated content changed. This is content-stable incremental
-materialization, not compiler-level incremental analysis. After successful
-generation, Xmake removes only live files absent from staging, then promotes
-each staged file with `copy_if_different`. Unchanged files retain their mtimes
-even when other artifacts are added or removed. Empty directories that conflict
-with a new file are removed before promotion. A failed Carven invocation discards staging
-without modifying live output. A failed promotion leaves the dependency cache
-invalid so the next build repairs any partial update. Changing only the
-installed rule file also invalidates the generation job.
+The compiler program, complete sorted `.cv` input set, invocation, installed rule
+files, and live generated artifacts participate in generation dependency checks.
+A source edit reruns each affected complete Carven batch. An installed-library
+edit also invalidates consumers that analyze it. Missing generated artifacts
+cause regeneration before native compilation resumes.
+
+Generation writes to staging. A successful invocation removes obsolete live
+files and promotes artifacts with `copy_if_different`; unchanged bytes preserve
+mtimes. Failed generation leaves live output intact. Failed promotion leaves the
+dependency record invalid so the next build repairs partial output. Xmake's C++
+dependency scanner tracks included headers and rebuilds affected native objects.
+
+## Inline tests
 
 Inline-test targets use ordinary xmake target and test registration concepts:
 
@@ -133,42 +158,36 @@ runner header without a generated entry; the target supplies its own process
 entry, which may be an ordinary C++ source added with `add_files` or a Carven
 `main`. Omitting `tests` emits no tests. These are the only accepted modes. The
 rule does not discover test files, copy or compile an external entry path,
-create targets, or call `add_tests`.
+or call `add_tests`. It creates only the installed standard-library dependency.
 
-To test unpublished package or rule changes from a Carven checkout, point that
-checkout at this local repository and force xmake to reinstall the rules-only
-package:
+## Local development
+
+The compiler repository uses `rules_only = true` while building its own compiler.
+The rule then uses the project's `carven` target and project-root `crafts/`.
+Integration projects can set `carven.program` to a local compiler and
+`carven.craftsdir` to its matching Crafts directory.
+
+From a Carven checkout, install and exercise a local rules package:
 
 ```shell
-CARVEN_XMAKE_REPO_DIR=/path/to/carven-xmake-repo xmake require --force
-CARVEN_XMAKE_REPO_DIR=/path/to/carven-xmake-repo xmake f
-CARVEN_XMAKE_REPO_DIR=/path/to/carven-xmake-repo xmake build
-CARVEN_XMAKE_REPO_DIR=/path/to/carven-xmake-repo xmake test
+CARVEN_XMAKE_REPO_DIR=/path/to/carven-xmake-repo ./xmakew require --force
+CARVEN_XMAKE_REPO_DIR=/path/to/carven-xmake-repo ./xmakew f
+CARVEN_XMAKE_REPO_DIR=/path/to/carven-xmake-repo ./xmakew build
+CARVEN_XMAKE_REPO_DIR=/path/to/carven-xmake-repo ./xmakew test
 ```
 
-The rule-contract smoke lives in the Carven checkout and runs the locally built
-compiler with the locally installed packaged rule. It protects the current
-build invariants defined above; package-repository layout is not part of that
-contract.
+Build the compiler before testing. Generation runs during Xmake preparation,
+before target dependencies are built, so the compiler executable must already
+be available. `CARVEN_XMAKE_REPO_DIR` selects the checkout's package repository;
+omitting it selects the GitHub repository.
 
-The build step before testing is required. Generation runs in Xmake's prepare
-phase so named-module scanning can consume generated files; a compiler target
-from the same project cannot be built early enough by an ordinary target
-dependency.
-
-`CARVEN_XMAKE_REPO_DIR` is consumed by the Carven checkout, not by this package
-repository. Without it, the Carven checkout uses the GitHub repository.
-
-To validate a complete Carven package installation from a local Carven source
-checkout, set `CARVEN_SOURCE_DIR` while using this package repository:
+To install the complete package from local Carven source, use:
 
 ```shell
 CARVEN_SOURCE_DIR=/path/to/carven xmake require --force carven
 ```
 
-Without `CARVEN_SOURCE_DIR`, a complete package installation obtains the Carven
-source from GitHub. Rules-only installations do not use Carven source and
-therefore ignore `CARVEN_SOURCE_DIR`.
-
-A complete installation selects the source project's `carven` target and
-installs the compiler and complete production crafts tree.
+A complete installation builds the source project's `carven` target and installs
+the compiler and production Crafts tree. Omitting `CARVEN_SOURCE_DIR` selects
+GitHub source. Rules-only installations contain the build rule and require no
+compiler source.

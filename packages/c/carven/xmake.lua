@@ -1,5 +1,5 @@
 package("carven")
-    set_xmakever("3.0.4")
+    set_xmakever("3.1.1")
     set_kind("toolchain")
     set_homepage("https://github.com/ryblust/carven")
     set_description("The Carven source-to-C++ compiler")
