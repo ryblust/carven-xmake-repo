@@ -42,8 +42,11 @@ dependency scanning, compiler-option invalidation, build caching, and incrementa
 object compilation.
 
 Generation runs through `before_prepare_files`, xmake's job graph, and
-`core.project.depend`. The rule consumes Carven's version 1 `--artifact-manifest` output
-for the actual source and artifact inventory. Xmake's C++ named-module scanner runs in the main prepare
+`core.project.depend`. The rule consumes Carven's `--artifact-manifest` output
+for the actual artifact inventory and each implementation's source input.
+It registers implementation files during configuration using the stable
+source-path-to-`.cpp` contract, plus the requested test entry. The manifest
+must agree with that registration before any native compilation. Xmake's C++ named-module scanner runs in the main prepare
 phase and scans ordinary `.cpp` consumers as well as module interface units.
 The prepare-stage boundary therefore guarantees that generated C++ and headers
 exist before the scanner starts.
@@ -131,9 +134,10 @@ generation emits no report.
 
 The complete sorted `.cv` input set, invocation, compiler program, installed
 rule files, and live artifacts participate in generation dependency checks.
-Inputs, the compiler, and rules use SHA-256 content signatures. Rewriting
+Inputs, the compiler, rules, and live artifacts use XXHash128 content fingerprints. Rewriting
 identical source bytes does not invoke Carven; changing bytes while preserving
-the timestamp does. Hashes and Crafts directory inventories are shared within
+the timestamp does. Modifying a generated file also triggers regeneration,
+including when its timestamp is preserved. Hashes and Crafts directory inventories are shared within
 one Xmake process, then rebuilt on the next invocation. Discovery and hashing of
 shared inputs therefore scale with distinct files and roots rather than the
 number of consuming targets. Live artifact existence and timestamps still use
@@ -145,29 +149,30 @@ cause regeneration before native compilation resumes. Native headers are C++
 dependencies, so editing one does not rerun Carven analysis.
 
 Generation writes to staging and requests a separate compiler manifest. Before
-promotion, the rule validates its version, selected input bindings, artifact roles,
-relative paths, artifact existence, and agreement with registered C++ sources.
-The compiler may collapse selected
-symlink aliases of the same physical input. It promotes only listed artifacts and
-removes obsolete paths from the previous successful inventory. No compiler
-scratch files become build inputs. Promotion uses `copy_if_different`, so
+promotion, the rule checks the artifact inventory, local paths, uniqueness,
+artifact existence, and agreement with the registered C++ sources and their
+input ownership. The compiler owns source identities and semantic validation.
+The rule promotes only listed artifacts, then removes obsolete paths from the
+previous successful inventory. Listed artifacts become build inputs.
+Promotion uses `copy_if_different`, so
 unchanged bytes preserve mtimes. Failed generation or invalid manifests leave
 live output intact. Failed promotion leaves the dependency record invalid so the
-next build repairs partial output. Xmake's C++ dependency scanner tracks
+next build repairs partial output. A successful dependency record stores the
+invocation and input signatures, the actual artifact paths, and freshly sampled
+live artifact signatures. Xmake's C++ dependency scanner tracks
 included headers and rebuilds affected native objects.
 
-## Workspace, ownership, and cost
+## Workspace and responsibilities
 
 The Xmake project directory is the workspace. The rule invokes Carven with that
 directory as its working directory; the compiler manifest records its physical
 absolute path as `workspace.root`. Input filenames are interpreted relative to
 that root. Each ordinary Xmake target defines a source selection, a native
-compilation environment, and a linkage domain. There is no parallel Carven
-project file, target graph, or build database.
+compilation environment, and a linkage domain.
 
 Xmake's `add_files`, package/toolchain selection, target dependencies, job graph,
-and dependency engine remain the project model. Compiler manifests supply facts
-through the compiler's external contract; they do not replace those facilities.
+and dependency engine define the project model. The rule reads compiler manifest
+facts to validate and promote generated artifacts.
 The compiler checkout uses the same target rule as installed users. Its
 `rules_only` package is a development bootstrap: developers must build the local
 compiler before a target's prepare stage can execute it. Ordinary installed
@@ -177,15 +182,11 @@ packages already supply a built compiler through `add_requires`.
 | --- | --- |
 | Source identities, syntax, imports, semantic validity, and diagnostics | Source selection and target dependency graph |
 | `.cv` translation to C++ headers and implementations | Native compiler settings, compilation, linking, and execution |
-| Actual input and artifact facts in a versioned manifest | Change detection, scheduling, promotion, and stale-output recovery |
+| Actual input and artifact facts in a manifest | Change detection, scheduling, promotion, and stale-output recovery |
 | Immutable semantic/query APIs and reusable compiler infrastructure | Persistent build records and compatible native object reuse |
 
-The manifest is factual output, not a build plan or cache database. The compiler
-does not decide which Xmake targets need rebuilding. The rule does not reproduce
-semantic import resolution or infer safe source pruning. Consumer Carven batches
-still perform complete analysis; native object reuse does not imply semantic
-cache reuse. A future incremental compiler query can expose invalidated semantic
-facts through the same boundary without taking over the build graph.
+Each consumer Carven batch performs complete semantic analysis. Xmake tracks
+generation dependencies and reuses compatible native objects independently.
 
 Per-file options can keep a provider's native environment local when its headers
 do not form part of another translation unit's interface:
@@ -195,9 +196,8 @@ add_files("src/provider.cv", {includedirs = "native", defines = "MY_PROVIDER=1"}
 ```
 
 These options apply to that generated implementation. Shared header requirements
-remain ordinary target or dependency settings. Installed-library sharing retains
-all effective target compiler options; the rule never drops include paths or
-macros to force cache reuse.
+remain ordinary target or dependency settings. Installed-library sharing uses
+all effective target compiler options, including include paths and macros.
 
 ## Inline tests
 
@@ -217,8 +217,9 @@ generated entry. `tests = "runner"` emits inline tests and the generated
 runner header without a generated entry; the target supplies its own process
 entry, which may be an ordinary C++ source added with `add_files` or a Carven
 `main`. Omitting `tests` emits no tests. These are the only accepted modes. The
-rule does not discover test files, copy or compile an external entry path,
-or call `add_tests`. It creates only the installed standard-library dependency.
+project selects test files with `add_files`, supplies any process entry as source,
+and registers execution with `add_tests`. The rule creates the installed
+standard-library dependency.
 
 ## Local development
 
