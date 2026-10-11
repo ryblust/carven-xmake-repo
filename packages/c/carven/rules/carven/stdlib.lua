@@ -66,10 +66,11 @@ local function compilation(target, dependencies)
 end
 
 local function create_target(consumer, name, domain, flags, native, dependencies, opt)
-    -- Xmake's target constructor takes scopeinfo rather than a plain table.
-    -- Preserve its API metadata, but no consumer values, hooks or target caches.
-    local info = consumer._INFO:clone()
-    for key in pairs(info:info()) do info:info()[key] = nil end
+    -- Native target scopes carry the constructor's API metadata. Any declared
+    -- target supplies it; producer settings and hooks start empty.
+    local scope = table.values(project.scope("target"))[1]
+    local info = assert(scope, "carven: project has no target scope"):clone()
+    for key in pairs(info:info()) do info:set(key, nil) end
     local node = target_api.new(name, info)
     node:set("kind", "object")
     node:set("default", false)
@@ -92,6 +93,8 @@ local function create_target(consumer, name, domain, flags, native, dependencies
     node:rule_add(rule)
     for _, dependency in ipairs(rule:orderdeps()) do node:rule_add(dependency) end
     project.target_add(node)
+    -- Registration does not load a dynamically added target. Use Xmake's
+    -- lifecycle before its native configuration runner.
     assert(node:_load())
     assert(node:_load_after())
     target_utils.config_target(node, opt)
