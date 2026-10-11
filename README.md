@@ -19,7 +19,7 @@ Select sources with `add_files` and configure native compilation through Xmake
 target and file settings. The rule includes installed Crafts and a project-root
 `crafts/` directory when present.
 
-For local rule development, run this from a Carven checkout:
+Refresh local rules from a Carven checkout:
 
 ```shell
 CARVEN_XMAKE_REPO_DIR=/path/to/carven-xmake-repo ./xmakew require --force

@@ -20,6 +20,7 @@ local function prerequisites(target)
             table.insert(dependencies, {
                 name = dependency:fullname(),
                 links = target:extraconf("deps", name, "links"),
+                inherit = target:extraconf("deps", name, "inherit"),
             })
         end
     end
@@ -27,88 +28,107 @@ local function prerequisites(target)
     return dependencies
 end
 
-local function compilation(target, dependencies)
-    local native = target:compiler("cxx")
-    -- A temporary native configuration view has no jobs or project identity.
-    -- PCH changes compilation cost, so preserve its header as a normal include.
-    local view = target:clone()
-    local generated = path.absolute(path.join(target:autogendir(), "rules", "carven"))
-    local includedirs = {}
-    for _, directory in ipairs(table.wrap(view:get("includedirs"))) do
-        if path.absolute(directory) ~= generated then table.insert(includedirs, directory) end
-    end
-    view:set("includedirs", includedirs)
-    view:set("pcxxheader", {})
-    local pcheader = target:data("carven.pcheader")
-    if pcheader then view:add("forceincludes", pcheader) end
-    local flags = native:compflags({target = view, targetkind = "shared"})
-
-    local identity = {
-        target:data("carven.program"), target:data("carven.installed_sources"),
-        target:plat(), target:arch(), native:name(), native:program(),
-    }
-    for _, toolchain in ipairs(target:toolchains()) do
-        table.insert(identity, toolchain:fullname())
-    end
-    local environments = native:runenvs() or {}
-    local names = table.keys(environments)
-    table.sort(names)
-    for _, name in ipairs(names) do
-        table.insert(identity, encode({name, encode(table.wrap(environments[name]))}))
-    end
-    -- Sharing also preserves the native prerequisite graph. Merging consumers'
-    -- dependencies can make a library depend on one of its own consumers.
-    for _, dependency in ipairs(dependencies) do
-        table.insert(identity, encode({dependency.name, tostring(dependency.links)}))
-    end
-    table.join2(identity, flags)
-    return hash.uuid4(encode(identity)):lower(), flags, native
-end
-
-local function create_target(consumer, name, domain, flags, native, dependencies, opt)
-    -- Native target scopes carry the constructor's API metadata. Any declared
-    -- target supplies it; producer settings and hooks start empty.
-    local scope = table.values(project.scope("target"))[1]
-    local info = assert(scope, "carven: project has no target scope"):clone()
+-- Configure the producer itself before deciding whether its native work can be
+-- shared. Retain native settings as Xmake values, including grouped flags and
+-- explicit false policies; no resolved argv is replayed as raw flags.
+local function library_producer(consumer, name, dependencies, opt)
+    local scope = assert(table.values(project.scope("target"))[1])
+    local info = scope:clone()
     for key in pairs(info:info()) do info:set(key, nil) end
+    for key, value in pairs(table.clone(consumer:info(), 3)) do
+        info:set(key, value)
+    end
+    local excluded = {}
+    for _, key in ipairs({"rules", "deps", "values", "tests", "pcxxheader", "pcheader",
+                          "filename", "basename", "configvar", "filegroups", "runargs", "runenv", "runenvs"}) do
+        excluded[key] = true
+    end
+    -- Xmake's target APIs identify source/output paths and lifecycle scripts.
+    -- Native include paths and compilation settings belong to its common APIs.
+    for _, api in ipairs(target_api.apis().paths) do
+        excluded[assert(api:match("^target%.[^_]+_(.+)$"))] = true
+    end
+    for _, api in ipairs(target_api.apis().script) do
+        local stage, hook = api:match("^target%.([^_]+)_(.+)$")
+        excluded[stage == "on" and hook or hook .. "_" .. stage] = true
+    end
+    for _, key in ipairs(table.keys(info:info())) do
+        local name = key:gsub("^__extra_", ""):gsub("^__override_", ""):gsub("^__sourceinfo_", "")
+        if excluded[name] or name:match("^values%.carven%.")
+            or name:match("^configvar%.") or name:match("^runenvs?%.") then
+            info:set(key, nil)
+        end
+    end
     local node = target_api.new(name, info)
     node:set("kind", "object")
     node:set("default", false)
     node:set("group", "carven/stdlib")
-    node:set("plat", consumer:plat())
-    node:set("arch", consumer:arch())
-    for _, toolchain in ipairs(table.wrap(consumer:get("toolchains"))) do
-        node:add("toolchains", toolchain, table.clone(consumer:extraconf("toolchains", toolchain) or {}))
+    if not node:is_plat("windows", "mingw") then
+        node:add("cxflags", "-fPIC", {tools = {"gcc", "clang"}})
     end
-    node:set("toolset.cxx", native:name() .. "@" .. native:program())
-    node:add("cxxflags", flags, {force = true})
+    local generated = path.absolute(path.join(consumer:autogendir(), "rules", "carven"), os.projectdir())
+    local includedirs = {}
+    for _, directory in ipairs(table.wrap(node:get("includedirs"))) do
+        if path.absolute(directory, os.projectdir()) ~= generated then table.insert(includedirs, directory) end
+    end
+    node:set("includedirs", includedirs)
+    local pcheader = consumer:data("carven.pcheader")
+    if pcheader then node:add("forceincludes", pcheader) end
     for _, dependency in ipairs(dependencies) do
-        node:add("deps", dependency.name, {inherit = false, links = dependency.links})
+        node:add("deps", dependency.name, {inherit = dependency.inherit, links = dependency.links})
     end
     node:values_set("carven.program", consumer:data("carven.program"))
     node:values_set("carven.craftsdir", path.directory(consumer:data("carven.installed_sources")))
     node:data_set("carven.stdlib_node", true)
-    node:data_set("carven.library_domain", domain)
     local rule = assert(consumer:rule("@carven/carven"))
     node:rule_add(rule)
     for _, dependency in ipairs(rule:orderdeps()) do node:rule_add(dependency) end
-    project.target_add(node)
-    -- Registration does not load a dynamically added target. Use Xmake's
-    -- lifecycle before its native configuration runner.
     assert(node:_load())
     assert(node:_load_after())
     target_utils.config_target(node, opt)
     return node
 end
 
+local function compilation_identity(node, dependencies)
+    local native = node:compiler("cxx")
+    local identity = {
+        node:data("carven.program"), node:data("carven.installed_sources"),
+        node:plat(), node:arch(), native:name(), native:program(),
+    }
+    for _, toolchain in ipairs(node:toolchains()) do table.insert(identity, toolchain:fullname()) end
+    local environments = native:runenvs() or {}
+    for _, name in ipairs(table.orderkeys(environments)) do
+        table.insert(identity, encode({name, encode(table.wrap(environments[name]))}))
+    end
+    for _, dependency in ipairs(dependencies) do
+        table.insert(identity, encode({dependency.name, tostring(dependency.links), tostring(dependency.inherit)}))
+    end
+    -- The producer's own generated include directory contains the same library
+    -- interface for a shared domain. Normalize only this location in its argv.
+    local generated = path.join(node:autogendir(), "rules", "carven")
+    for _, flag in ipairs(native:compflags({target = node})) do
+        flag = flag:replace(path.absolute(generated, os.projectdir()), "<carven-library>", {plain = true})
+        flag = flag:replace(generated, "<carven-library>", {plain = true})
+        table.insert(identity, flag)
+    end
+    return hash.uuid4(encode(identity)):lower()
+end
+
 function attach(target, opt)
     if target:data("carven.stdlib_node") then return end
     local dependencies = prerequisites(target)
-    local key, flags, native = compilation(target, dependencies)
+    local candidate = library_producer(target, "carven-stdlib-candidate", dependencies, opt)
+    local key = compilation_identity(candidate, dependencies)
     local name = "carven-stdlib-" .. key
-    local domain = "carven-installed-stdlib:" .. key
     local node = project.target(name)
-    if not node then node = create_target(target, name, domain, flags, native, dependencies, opt) end
+    local domain = "carven-installed-stdlib:" .. key
+    if not node then
+        -- Configure under the permanent name so Xmake owns stable source,
+        -- object and dependency paths independently of the first consumer.
+        node = library_producer(target, name, dependencies, opt)
+        node:data_set("carven.library_domain", domain)
+        project.target_add(node)
+    end
     target:add("deps", node:fullname(), {inherit = false})
     target:data_set("carven.library_domain", domain)
     target:data_set("carven.stdlib_target", node:fullname())

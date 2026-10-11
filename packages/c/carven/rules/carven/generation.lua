@@ -7,7 +7,7 @@ function signatures(files, opt)
     _g.signatures = _g.signatures or {}
     local values = {}
     for _, file in ipairs(files) do
-        local absolute = path.absolute(file)
+        local absolute = path.absolute(file, os.projectdir())
         table.insert(values, absolute)
         if not os.isfile(absolute) then
             assert(opt.optional, "carven: missing generation input: " .. absolute)
@@ -27,7 +27,7 @@ end
 
 function inventory(root)
     _g.inventories = _g.inventories or {}
-    local absolute = path.absolute(root)
+    local absolute = path.absolute(root, os.projectdir())
     local cached = _g.inventories[absolute]
     if not cached then
         cached = {cv = os.files(path.join(absolute, "**.cv")), cpp = os.files(path.join(absolute, "**.cpp"))}

@@ -17,25 +17,26 @@ local function has_cpp_language(target)
     return false
 end
 
-local function source_input(sourcefile, path_api, installed_sources)
-    local projectdir = os.projectdir()
+local function source_input(sourcefile, path_api, installed_sources, projectdir)
     local physical_path = path_api.unix(path_api.absolute(sourcefile, projectdir))
     local source_argument = path_api.unix(path_api.relative(physical_path, projectdir))
     local installed_prefix = path_api.unix(installed_sources) .. "/"
     local logical
     if physical_path:sub(1, #installed_prefix) == installed_prefix then
         source_argument = physical_path
-        logical = physical_path:match("/(crafts/.*)$")
+        logical = "crafts/carven/" .. physical_path:sub(#installed_prefix + 1)
     elseif not path_api.is_absolute(source_argument) and
         source_argument ~= ".." and source_argument:sub(1, 3) ~= "../" then
         logical = source_argument
     else
         return nil, "carven: source path is outside the project and crafts: " .. tostring(sourcefile)
     end
-    if not logical then
-        return nil, "carven: installed source path must belong to a crafts directory: " .. tostring(sourcefile)
-    end
-    return source_argument, nil, logical
+    local module = logical:gsub("%.cv$", ""):gsub("/", ".")
+    return {
+        path = source_argument,
+        module = module,
+        implementation = module:gsub("%.", "/") .. ".cpp",
+    }
 end
 
 local function scan_artifacts(root, path_api, os_api)
@@ -78,7 +79,7 @@ local function sync_artifacts(staging_root, live_root, desired_paths, previous_p
     return desired_paths
 end
 
-local function make_invocation(target, sourcebatch, path_api)
+local function make_invocation(target, sourcebatch, path_api, projectdir)
     local sourcefiles = table.copy(sourcebatch.sourcefiles)
     if #sourcefiles == 0 then
         return nil
@@ -87,19 +88,19 @@ local function make_invocation(target, sourcebatch, path_api)
 
     local source_arguments = {}
     for _, sourcefile_cv in ipairs(sourcefiles) do
-        local source_argument, source_error = source_input(
-            sourcefile_cv, path_api, target:data("carven.installed_sources")
+        local input, source_error = source_input(
+            sourcefile_cv, path_api, target:data("carven.installed_sources"), projectdir
         )
         if source_error then
             return nil, source_error
         end
-        table.insert(source_arguments, source_argument)
+        table.insert(source_arguments, "--source=" .. input.module .. "=" .. input.path)
     end
     table.sort(source_arguments)
 
-    local live_root = path_api.join(target:autogendir(), "rules", "carven")
-    local staging_root = path_api.join(target:autogendir(), "rules", "carven.staging")
-    local manifest_file = path_api.join(target:autogendir(), "rules", "carven.manifest.staging.json")
+    local live_root = path_api.absolute(path_api.join(target:autogendir(), "rules", "carven"), projectdir)
+    local staging_root = path_api.absolute(path_api.join(target:autogendir(), "rules", "carven.staging"), projectdir)
+    local manifest_file = path_api.absolute(path_api.join(target:autogendir(), "rules", "carven.manifest.staging.json"), projectdir)
     local program = target:data("carven.program")
     if not program then
         return nil, "carven rule was not configured"
@@ -151,7 +152,7 @@ local function make_invocation(target, sourcebatch, path_api)
         argv = argv,
         timings = target:data("carven.timings"),
         depvalues = depvalues,
-        dependfile = target:dependfile(target:autogenfile("carven.compile")),
+        dependfile = path_api.absolute(target:dependfile(target:autogenfile("carven.compile")), projectdir),
     }
 end
 
@@ -176,7 +177,7 @@ rule("carven.build")
         end
         local is_stdlib = target:data("carven.stdlib_node")
         local pcheader = target:data("carven.pcheader") or target:pcheaderfile("cxx")
-        if pcheader then target:data_set("carven.pcheader", path.absolute(pcheader)) end
+        if pcheader then target:data_set("carven.pcheader", path.absolute(pcheader, os.projectdir())) end
         local tests = not is_stdlib and rule_option(target, "tests") or nil
         if tests ~= nil and tests ~= "main" and tests ~= "runner" then
             raise("carven: tests must be 'main' or 'runner'")
@@ -218,9 +219,9 @@ rule("carven.build")
         do
             local modules = {}
             for _, source in ipairs(generation.inventory(installed_sources).cv) do
-                local _, source_error, logical = source_input(source, path, installed_sources)
+                local input, source_error = source_input(source, path, installed_sources, os.projectdir())
                 assert(not source_error, source_error)
-                table.insert(modules, (logical:gsub("%.cv$", ""):gsub("/", ".")))
+                table.insert(modules, input.module)
             end
             table.sort(modules)
             assert(#modules > 0, "carven: installed standard library has no Carven sources: " .. installed_sources)
@@ -230,7 +231,7 @@ rule("carven.build")
         target:data_set("carven.timings", timings)
         target:data_set("carven.linkage_domain", linkage_domain)
 
-        local live_root = path.join(target:autogendir(), "rules", "carven")
+        local live_root = path.absolute(path.join(target:autogendir(), "rules", "carven"), os.projectdir())
         target:add("includedirs", live_root)
 
         for _, root in ipairs(is_stdlib and {craftsdir} or table.unique({craftsdir, project_crafts})) do
@@ -241,7 +242,7 @@ rule("carven.build")
             for _, extension in ipairs({".cv", ".cpp"}) do
                 local files = generation.inventory(root)[extension:sub(2)]
                 for _, source in ipairs(files) do
-                    local installed = path.unix(path.absolute(source)):startswith(path.unix(installed_sources) .. "/")
+                    local installed = path.unix(path.absolute(source, os.projectdir())):startswith(path.unix(installed_sources) .. "/")
                     if extension == ".cv" or is_stdlib or not installed then
                         table.insert(craft_files, source)
                     end
@@ -255,19 +256,17 @@ rule("carven.build")
         for _, sourcefile_cv in ipairs(target:sourcefiles()) do
             if path.extension(sourcefile_cv) == ".cv" then
                 local source_config = target:fileconfig(sourcefile_cv) or {}
-                local source_argument, source_error, logical_path = source_input(
-                    sourcefile_cv, path, installed_sources
+                local input, source_error = source_input(
+                    sourcefile_cv, path, installed_sources, os.projectdir()
                 )
                 if source_error then
                     raise(source_error)
                 end
-                local module = logical_path:gsub("%.cv$", ""):gsub("/", ".")
-                -- This stable source-to-implementation path is the registration
+                -- This stable module-to-implementation path is the registration
                 -- contract; manifest facts validate it before native scanning.
-                local generated_argument = logical_path:gsub("%.cv$", ".cpp")
-                local sourcefile_cpp = path.join(live_root, generated_argument)
-                if not library_modules[module] or is_stdlib then
-                    implementations[generated_argument] = source_argument
+                local sourcefile_cpp = path.join(live_root, input.implementation)
+                if not library_modules[input.module] or is_stdlib then
+                    implementations[input.implementation] = input.path
                     local native_config = table.clone(source_config)
                     -- Source-selection rules belong to .cv; native per-file
                     -- settings belong to the implementation it generates.
@@ -299,7 +298,7 @@ rule("carven.build")
         import("utils.progress")
         local generation = import("generation", {rootdir = path.directory(rule_file)})
 
-        local invocation, invocation_error = make_invocation(target, sourcebatch, path)
+        local invocation, invocation_error = make_invocation(target, sourcebatch, path, os.projectdir())
         if invocation_error then
             raise(invocation_error)
         end
