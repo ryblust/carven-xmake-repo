@@ -1,30 +1,5 @@
 import("core.base.json")
 
--- A build observes one source snapshot. Share its hashes across consumers of the
--- same compiler and Crafts without persisting timestamp-only content guesses.
-function signatures(files, opt)
-    opt = opt or {}
-    _g.signatures = _g.signatures or {}
-    local values = {}
-    for _, file in ipairs(files) do
-        local absolute = path.absolute(file, os.projectdir())
-        table.insert(values, absolute)
-        if not os.isfile(absolute) then
-            assert(opt.optional, "carven: missing generation input: " .. absolute)
-            table.insert(values, "missing")
-        else
-            local mtime, size = os.mtime(absolute), os.filesize(absolute)
-            local cached = _g.signatures[absolute]
-            if opt.refresh or not cached or cached.mtime ~= mtime or cached.size ~= size then
-                cached = {mtime = mtime, size = size, digest = hash.xxhash128(absolute)}
-                _g.signatures[absolute] = cached
-            end
-            table.insert(values, cached.digest)
-        end
-    end
-    return values
-end
-
 function inventory(root)
     _g.inventories = _g.inventories or {}
     local absolute = path.absolute(root, os.projectdir())

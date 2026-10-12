@@ -31,7 +31,14 @@ local function source_input(sourcefile, path_api, installed_sources, projectdir)
     else
         return nil, "carven: source path is outside the project and crafts: " .. tostring(sourcefile)
     end
-    local module = logical:gsub("%.cv$", ""):gsub("/", ".")
+    local stem = logical:match("^(.*)%.cv$")
+    if not stem then return nil, "carven: source must have a .cv extension: " .. logical end
+    for component in stem:gmatch("[^/]+") do
+        if not component:match("^[A-Za-z_][A-Za-z0-9_]*$") then
+            return nil, "carven: invalid module path component '" .. component .. "' in " .. logical
+        end
+    end
+    local module = stem:gsub("/", ".")
     return {
         path = source_argument,
         module = module,
@@ -320,11 +327,11 @@ rule("carven.build")
             local inputs = table.join(invocation.sourcefiles, {
                 invocation.program, rule_file, stdlib_file, generation_file,
             })
-            local input_values = table.join(invocation.depvalues, generation.signatures(inputs))
             local live_files = invocation_depfiles(invocation, cached.artifacts or {}, path)
-            local depvalues = table.join(input_values, generation.signatures(live_files, {optional = true}))
+            local depfiles = table.join(inputs, live_files)
             local changed = target:is_rebuilt() or not cached.artifacts or depend.is_changed(cached, {
-                values = depvalues,
+                files = depfiles,
+                values = invocation.depvalues,
                 lastmtime = os.mtime(invocation.dependfile),
             })
             if not changed then
@@ -367,8 +374,8 @@ rule("carven.build")
                     )
                     local output_files = invocation_depfiles(invocation, desired_paths, path)
                     depend.save({
-                        files = output_files,
-                        values = table.join(input_values, generation.signatures(output_files, {refresh = true})),
+                        files = table.join(inputs, output_files),
+                        values = invocation.depvalues,
                         artifacts = desired_paths,
                     }, invocation.dependfile)
                 end,
