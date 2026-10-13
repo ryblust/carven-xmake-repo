@@ -1,5 +1,24 @@
 import("core.base.json")
 
+-- Share input reads within one build, but hash fresh bytes in each new process.
+-- Timestamps and sizes cannot identify content after a preserved-mtime edit.
+function signatures(files)
+    _g.signatures = _g.signatures or {}
+    local values = {}
+    for _, file in ipairs(files) do
+        local absolute = path.absolute(file, os.projectdir())
+        table.insert(values, absolute)
+        local digest = _g.signatures[absolute]
+        if not digest then
+            assert(os.isfile(absolute), "carven: missing generation input: " .. absolute)
+            digest = hash.xxhash128(absolute)
+            _g.signatures[absolute] = digest
+        end
+        table.insert(values, digest)
+    end
+    return values
+end
+
 function inventory(root)
     _g.inventories = _g.inventories or {}
     local absolute = path.absolute(root, os.projectdir())

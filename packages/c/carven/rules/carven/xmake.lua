@@ -327,11 +327,12 @@ rule("carven.build")
             local inputs = table.join(invocation.sourcefiles, {
                 invocation.program, rule_file, stdlib_file, generation_file,
             })
+            local input_values = table.join(invocation.depvalues, generation.signatures(inputs))
             local live_files = invocation_depfiles(invocation, cached.artifacts or {}, path)
             local depfiles = table.join(inputs, live_files)
             local changed = target:is_rebuilt() or not cached.artifacts or depend.is_changed(cached, {
                 files = depfiles,
-                values = invocation.depvalues,
+                values = input_values,
                 lastmtime = os.mtime(invocation.dependfile),
             })
             if not changed then
@@ -375,7 +376,7 @@ rule("carven.build")
                     local output_files = invocation_depfiles(invocation, desired_paths, path)
                     depend.save({
                         files = table.join(inputs, output_files),
-                        values = invocation.depvalues,
+                        values = input_values,
                         artifacts = desired_paths,
                     }, invocation.dependfile)
                 end,
