@@ -183,6 +183,8 @@ rule("carven.build")
             raise("carven: timings must be a boolean")
         end
         local is_stdlib = target:data("carven.stdlib_node")
+        -- Shared native producers and final consumers both need platform support.
+        if target:is_plat("windows", "mingw") then target:add("syslinks", "ws2_32") end
         local pcheader = target:data("carven.pcheader") or target:pcheaderfile("cxx")
         if pcheader then target:data_set("carven.pcheader", path.absolute(pcheader, os.projectdir())) end
         local tests = not is_stdlib and rule_option(target, "tests") or nil
