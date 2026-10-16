@@ -3,8 +3,6 @@ local function rule_option(target, name)
 end
 
 local rule_file = path.join(os.scriptdir(), "xmake.lua")
-local stdlib_file = path.join(os.scriptdir(), "stdlib.lua")
-local generation_file = path.join(os.scriptdir(), "generation.lua")
 
 local function has_cpp_language(target)
     for _, language in ipairs(table.wrap(target:get("languages"))) do
@@ -17,162 +15,12 @@ local function has_cpp_language(target)
     return false
 end
 
-local function source_input(sourcefile, path_api, installed_sources, projectdir)
-    local physical_path = path_api.unix(path_api.absolute(sourcefile, projectdir))
-    local source_argument = path_api.unix(path_api.relative(physical_path, projectdir))
-    local installed_prefix = path_api.unix(installed_sources) .. "/"
-    local logical
-    if physical_path:sub(1, #installed_prefix) == installed_prefix then
-        source_argument = physical_path
-        logical = "crafts/carven/" .. physical_path:sub(#installed_prefix + 1)
-    elseif not path_api.is_absolute(source_argument) and
-        source_argument ~= ".." and source_argument:sub(1, 3) ~= "../" then
-        logical = source_argument
-    else
-        return nil, "carven: source path is outside the project and crafts: " .. tostring(sourcefile)
-    end
-    local stem = logical:match("^(.*)%.cv$")
-    if not stem then return nil, "carven: source must have a .cv extension: " .. logical end
-    for component in stem:gmatch("[^/]+") do
-        if not component:match("^[A-Za-z_][A-Za-z0-9_]*$") then
-            return nil, "carven: invalid module path component '" .. component .. "' in " .. logical
-        end
-    end
-    local module = stem:gsub("/", ".")
-    return {
-        path = source_argument,
-        module = module,
-        implementation = module:gsub("%.", "/") .. ".cpp",
-    }
-end
-
-local function scan_artifacts(root, path_api, os_api)
-    local logical_paths = {}
-    if not os_api.isdir(root) then
-        return logical_paths
-    end
-    for _, artifact_file in ipairs(os_api.files(path_api.join(root, "**"))) do
-        if os_api.isfile(artifact_file) then
-            local logical_path = path_api.unix(path_api.relative(artifact_file, root))
-            table.insert(logical_paths, logical_path)
-        end
-    end
-    table.sort(logical_paths)
-    return logical_paths
-end
-
-local function sync_artifacts(staging_root, live_root, desired_paths, previous_paths, path_api, os_api)
-    local desired = {}
-    for _, logical_path in ipairs(desired_paths) do
-        desired[logical_path] = true
-    end
-    local previous = previous_paths or scan_artifacts(live_root, path_api, os_api)
-    os_api.mkdir(live_root)
-
-    for _, logical_path in ipairs(desired_paths) do
-        local source_file = path_api.join(staging_root, logical_path)
-        local destination_file = path_api.join(live_root, logical_path)
-        if os_api.isdir(destination_file) then
-            os_api.rm(destination_file)
-        end
-        os_api.mkdir(path_api.directory(destination_file))
-        os_api.cp(source_file, destination_file, {copy_if_different = true})
-    end
-    for _, logical_path in ipairs(previous) do
-        if not desired[logical_path] then
-            os_api.rm(path_api.join(live_root, logical_path))
-        end
-    end
-    return desired_paths
-end
-
-local function make_invocation(target, sourcebatch, path_api, projectdir)
-    local sourcefiles = table.copy(sourcebatch.sourcefiles)
-    if #sourcefiles == 0 then
-        return nil
-    end
-    table.sort(sourcefiles)
-
-    local source_arguments = {}
-    for _, sourcefile_cv in ipairs(sourcefiles) do
-        local input, source_error = source_input(
-            sourcefile_cv, path_api, target:data("carven.installed_sources"), projectdir
-        )
-        if source_error then
-            return nil, source_error
-        end
-        table.insert(source_arguments, "--source=" .. input.module .. "=" .. input.path)
-    end
-    table.sort(source_arguments)
-
-    local live_root = path_api.absolute(path_api.join(target:autogendir(), "rules", "carven"), projectdir)
-    local staging_root = path_api.absolute(path_api.join(target:autogendir(), "rules", "carven.staging"), projectdir)
-    local manifest_file = path_api.absolute(path_api.join(target:autogendir(), "rules", "carven.manifest.staging.json"), projectdir)
-    local program = target:data("carven.program")
-    if not program then
-        return nil, "carven rule was not configured"
-    end
-    local tests = target:data("carven.tests")
-    local linkage_domain = target:data("carven.linkage_domain")
-    local argv = {
-        "compile",
-        "--explicit-inputs",
-        "--output-dir",
-        tostring(path_api(staging_root)),
-        "--linkage-domain=" .. linkage_domain,
-        "--artifact-manifest=" .. tostring(path_api(manifest_file)),
-    }
-    local library_modules = target:data("carven.library_modules")
-    if library_modules then
-        table.insert(argv, "--library-domain=" .. target:data("carven.library_domain"))
-        for _, module in ipairs(library_modules) do
-            table.insert(argv, "--library-module=" .. module)
-        end
-        if target:data("carven.stdlib_node") then
-            table.insert(argv, "--emit-library")
-        end
-    end
-    if target:data("carven.timings") then
-        table.insert(argv, "--timings")
-    end
-    if tests == "main" then
-        table.insert(argv, "--tests=main")
-    elseif tests == "runner" then
-        table.insert(argv, "--tests=runner")
-    end
-    for _, source_argument in ipairs(source_arguments) do
-        table.insert(argv, source_argument)
-    end
-
-    local depvalues = {tostring(program)}
-    for _, argument in ipairs(argv) do
-        table.insert(depvalues, argument)
-    end
-
-    return {
-        program = program,
-        live_root = live_root,
-        staging_root = staging_root,
-        manifest_file = manifest_file,
-        sourcefiles = sourcefiles,
-        implementations = target:data("carven.implementations"),
-        argv = argv,
-        timings = target:data("carven.timings"),
-        depvalues = depvalues,
-        dependfile = path_api.absolute(target:dependfile(target:autogenfile("carven.compile")), projectdir),
-    }
-end
-
-local function invocation_depfiles(invocation, artifact_paths, path_api)
-    local depfiles = {}
-    for _, logical_path in ipairs(artifact_paths) do
-        table.insert(depfiles, path_api.join(invocation.live_root, logical_path))
-    end
-    return depfiles
-end
-
 rule("carven.build")
     set_extensions(".cv")
+
+    before_config(function (target)
+        import("generation", {rootdir = path.directory(rule_file)}).reset(target)
+    end)
 
     on_config(function (target, opt)
         import("core.project.project")
@@ -182,236 +30,124 @@ rule("carven.build")
         if timings ~= nil and type(timings) ~= "boolean" then
             raise("carven: timings must be a boolean")
         end
-        local is_stdlib = target:data("carven.stdlib_node")
-        -- Shared native producers and final consumers both need platform support.
-        if target:is_plat("windows", "mingw") then target:add("syslinks", "ws2_32") end
-        local pcheader = target:data("carven.pcheader") or target:pcheaderfile("cxx")
-        if pcheader then target:data_set("carven.pcheader", path.absolute(pcheader, os.projectdir())) end
-        local tests = not is_stdlib and rule_option(target, "tests") or nil
-        if tests ~= nil and tests ~= "main" and tests ~= "runner" then
-            raise("carven: tests must be 'main' or 'runner'")
+        local tests = rule_option(target, "tests")
+        if type(tests) == "table" then
+            if tests.entry ~= nil and type(tests.entry) ~= "boolean" then
+                raise("carven: tests.entry must be a boolean")
+            end
+            tests = tests.entry ~= false and true or "runner"
+        elseif tests ~= nil and type(tests) ~= "boolean" then
+            raise("carven: tests must be a boolean or a table with an entry option")
         end
-        local linkage_domain = rule_option(target, "linkage_domain")
-        if linkage_domain ~= nil and type(linkage_domain) ~= "string" then
-            raise("carven: linkage_domain must be a string")
-        end
-        linkage_domain = linkage_domain
-                    or (path.absolute(os.projectdir()) .. ":" .. target:fullname())
-
-        if not is_stdlib and not has_cpp_language(target) then
+        target:data_set("carven.tests", tests)
+        if not has_cpp_language(target) then
             target:add("languages", "c++20")
         end
 
-        local carven_program = target:values("carven.program")
-        local craftsdir = target:values("carven.craftsdir")
-        if not carven_program or not craftsdir then
-            local carven_package = assert(project.required_package("carven"), "carven package is required")
-            if carven_package:requireconf("configs", "rules_only") then
-                local compiler = assert(project.target("carven"), "rules_only requires a local compiler target or explicit toolchain paths")
-                carven_program = carven_program or compiler:targetfile()
-                craftsdir = craftsdir or path.join(os.projectdir(), "crafts")
-            else
-                local prefix = carven_package:installdir()
-                carven_program = carven_program or path.join(prefix, "bin", is_host("windows") and "carven.exe" or "carven")
-                craftsdir = craftsdir or path.join(prefix, "crafts")
-            end
+        local carven_package = assert(project.required_package("carven"), "carven package is required")
+        local carven_program, craftsdir
+        if carven_package:requireconf("configs", "rules_only") then
+            local compiler = assert(project.target("carven"), "rules_only requires a local compiler target")
+            carven_program = compiler:targetfile()
+            craftsdir = path.join(os.projectdir(), "crafts")
+        else
+            local filename = is_host("windows") and "carven.exe" or "carven"
+            carven_program = path.join(carven_package:installdir(), "bin", filename)
+            craftsdir = path.join(carven_package:installdir(), "crafts")
         end
         carven_program = path.absolute(carven_program, os.projectdir())
-        craftsdir = path.absolute(craftsdir, os.projectdir())
 
         target:data_set("carven.program", carven_program)
         local installed_sources = path.join(craftsdir, "carven")
         target:data_set("carven.installed_sources", installed_sources)
         local project_crafts = path.join(os.projectdir(), "crafts")
-        local craft_roots = is_stdlib and {installed_sources}
-            or table.unique({installed_sources, project_crafts})
-        do
-            local modules = {}
-            for _, source in ipairs(generation.inventory(installed_sources).cv) do
-                local input, source_error = source_input(source, path, installed_sources, os.projectdir())
-                assert(not source_error, source_error)
-                table.insert(modules, input.module)
-            end
-            table.sort(modules)
-            assert(#modules > 0, "carven: installed standard library has no Carven sources: " .. installed_sources)
-            target:data_set("carven.library_modules", modules)
-        end
-        target:data_set("carven.tests", tests)
+        local standard_sources = generation.inventory(installed_sources).cv
+        assert(#standard_sources > 0,
+            "carven: installed standard library has no Carven sources: " .. installed_sources)
+        target:data_set("carven.standard_sources", standard_sources)
         target:data_set("carven.timings", timings)
-        target:data_set("carven.linkage_domain", linkage_domain)
 
         local live_root = path.absolute(path.join(target:autogendir(), "rules", "carven"), os.projectdir())
-        target:add("includedirs", live_root)
 
-        for _, root in ipairs(is_stdlib and {craftsdir} or table.unique({craftsdir, project_crafts})) do
-            if os.isdir(root) then target:add("includedirs", root) end
+        for _, root in ipairs(table.unique({craftsdir, project_crafts})) do
+            if os.isdir(root) then
+                target:add("includedirs", root, {public = true})
+            end
         end
         local craft_files = {}
-        for _, root in ipairs(craft_roots) do
-            for _, extension in ipairs({".cv", ".cpp"}) do
-                local files = generation.inventory(root)[extension:sub(2)]
-                for _, source in ipairs(files) do
-                    local installed = path.unix(path.absolute(source, os.projectdir())):startswith(path.unix(installed_sources) .. "/")
-                    if extension == ".cv" or is_stdlib or not installed then
-                        table.insert(craft_files, source)
-                    end
+        for _, extension in ipairs({"cv", "cpp"}) do
+            for _, source in ipairs(generation.inventory(project_crafts)[extension]) do
+                local installed = path.unix(path.absolute(source, os.projectdir()))
+                    :startswith(path.unix(installed_sources) .. "/")
+                if not installed then
+                    table.insert(craft_files, source)
                 end
             end
         end
-        if #craft_files > 0 then target:add("files", craft_files) end
+        if #craft_files > 0 then
+            target:add("files", craft_files)
+        end
 
-        local library_modules, implementations = {}, {}
-        for _, module in ipairs(target:data("carven.library_modules")) do library_modules[module] = true end
+        local generated_files, sources, arguments = {}, {}, {}
         for _, sourcefile_cv in ipairs(target:sourcefiles()) do
             if path.extension(sourcefile_cv) == ".cv" then
                 local source_config = target:fileconfig(sourcefile_cv) or {}
-                local input, source_error = source_input(
-                    sourcefile_cv, path, installed_sources, os.projectdir()
-                )
-                if source_error then
-                    raise(source_error)
+                local input = generation.source_input(sourcefile_cv, installed_sources, os.projectdir())
+                table.insert(arguments, "--source=" .. input.module .. "=" .. input.path)
+                -- Register generated implementations before native scanning.
+                local sourcefile_cpp = path.relative(path.join(live_root, input.implementation), os.projectdir())
+                if path.unix(path.absolute(sourcefile_cv, os.projectdir()))
+                    :startswith(path.unix(installed_sources) .. "/") then
+                    raise("carven: installed standard source is already owned by the shared library build: "
+                        .. sourcefile_cv)
                 end
-                -- This stable module-to-implementation path is the registration
-                -- contract; manifest facts validate it before native scanning.
-                local sourcefile_cpp = path.join(live_root, input.implementation)
-                if not library_modules[input.module] or is_stdlib then
-                    implementations[input.implementation] = input.path
-                    local native_config = table.clone(source_config)
-                    -- Source-selection rules belong to .cv; native per-file
-                    -- settings belong to the implementation it generates.
-                    native_config.rule = nil
-                    native_config.rules = nil
-                    native_config.sourcekind = nil
-                    native_config.always_added = true
-                    target:add("files", sourcefile_cpp, native_config)
-                end
+                table.insert(sources, sourcefile_cv)
+                local native_config = table.clone(source_config)
+                -- Source-selection rules belong to .cv; native per-file
+                -- settings belong to the implementation it generates.
+                native_config.rule = nil
+                native_config.rules = nil
+                native_config.sourcekind = nil
+                native_config.always_added = true
+                target:add("files", sourcefile_cpp, native_config)
+                table.insert(generated_files, sourcefile_cpp)
             end
         end
-        if tests == "main" then
-            implementations["carven/generated/carven-test-main.cpp"] = false
-            target:add("files", path.join(
-                live_root,
-                "carven",
-                "generated",
-                "carven-test-main.cpp"
-            ), {
-                always_added = true,
-            })
+        if #sources > 0 then
+            target:add("includedirs", live_root, {public = true})
         end
-        target:data_set("carven.implementations", implementations)
+        if tests == true and #sources > 0 then
+            local entry = path.relative(
+                path.join(live_root, "carven", "generated", "carven-test-main.cpp"),
+                os.projectdir()
+            )
+            target:add("files", entry, {always_added = true})
+            table.insert(generated_files, entry)
+        end
+        table.sort(sources)
+        table.sort(arguments)
+        target:data_set("carven.sources", sources)
+        target:data_set("carven.source_arguments", arguments)
+        target:data_set("carven.compile_dependfile",
+            path.absolute(target:dependfile(target:autogenfile("carven.compile")), os.projectdir()))
+        target:data_set("carven.generated_files", generated_files)
+        target:data_set("carven.generated_root", live_root)
     end)
 
-    before_prepare_files(function (target, jobgraph, sourcebatch, opt)
-        import("core.base.option")
-        import("core.project.depend")
-        import("utils.progress")
-        local generation = import("generation", {rootdir = path.directory(rule_file)})
-
-        local invocation, invocation_error = make_invocation(target, sourcebatch, path, os.projectdir())
-        if invocation_error then
-            raise(invocation_error)
-        end
-        if not invocation then
-            return
-        end
-        jobgraph:add(target:fullname() .. "/carven.generate", function (index, total, jobopt)
-            if option.get("dry-run") and not os.isfile(invocation.program) then
-                print(os.args(table.join(invocation.program, invocation.argv)))
-                return
-            end
-            if not os.isfile(invocation.program) then
-                raise(string.format(
-                    "carven: compiler executable does not exist: %s; build or install Carven before building this target",
-                    invocation.program
-                ))
-            end
-            local cached = depend.load(invocation.dependfile) or {}
-            local inputs = table.join(invocation.sourcefiles, {
-                invocation.program, rule_file, stdlib_file, generation_file,
-            })
-            local input_values = table.join(invocation.depvalues, generation.signatures(inputs))
-            local live_files = invocation_depfiles(invocation, cached.artifacts or {}, path)
-            local depfiles = table.join(inputs, live_files)
-            local changed = target:is_rebuilt() or not cached.artifacts or depend.is_changed(cached, {
-                files = depfiles,
-                values = input_values,
-                lastmtime = os.mtime(invocation.dependfile),
-            })
-            if not changed then
-                return
-            end
-
-            progress.set_target(jobopt.progress, target)
-            progress.show(
-                jobopt.progress or 0,
-                "${color.build.object}compiling.cv %s",
-                target:name()
-            )
-            if option.get("dry-run") then
-                print(os.args(table.join(invocation.program, invocation.argv)))
-                return
-            end
-
-            os.tryrm(invocation.dependfile)
-            local stderr_file = invocation.timings and os.tmpfile() or nil
-            try
-            {
-                function ()
-                    os.tryrm(invocation.staging_root)
-                    os.tryrm(invocation.manifest_file)
-                    os.mkdir(invocation.staging_root)
-                    os.vrunv(invocation.program, invocation.argv, {
-                        curdir = os.projectdir(),
-                        stderr = stderr_file,
-                    })
-                    local desired_paths = generation.manifest(
-                        invocation.manifest_file, invocation.staging_root, invocation.implementations
-                    )
-                    sync_artifacts(
-                        invocation.staging_root,
-                        invocation.live_root,
-                        desired_paths,
-                        cached.artifacts,
-                        path,
-                        os
-                    )
-                    local output_files = invocation_depfiles(invocation, desired_paths, path)
-                    depend.save({
-                        files = table.join(inputs, output_files),
-                        values = input_values,
-                        artifacts = desired_paths,
-                    }, invocation.dependfile)
-                end,
-                finally
-                {
-                    function (ok, errors)
-                        if stderr_file then
-                            -- Keep each invocation's output intact across parallel targets.
-                            local output = io.readfile(stderr_file) or ""
-                            if output ~= "" then
-                                io.stderr:write("\ncarven target: " .. target:fullname() .. "\n"
-                                    .. output:gsub("^\r?\n", ""))
-                                io.stderr:flush()
-                            end
-                            os.tryrm(stderr_file)
-                        end
-                        os.tryrm(invocation.staging_root)
-                        os.tryrm(invocation.manifest_file)
-                        if not ok then
-                            raise(errors)
-                        end
-                    end
-                }
-            }
-        end)
+    before_prepare_files(function (target, jobgraph)
+        import("batches", {rootdir = path.directory(rule_file)}).generate(target, jobgraph)
     end, {jobgraph = true})
 
 rule("carven")
     after_config(function (target, opt)
-        import("stdlib", {rootdir = path.directory(rule_file)}).attach(target, opt)
+        if #(target:data("carven.sources") or {}) > 0 then
+            local batches = import("batches", {rootdir = path.directory(rule_file)})
+            local standard = batches.standard(target, opt)
+            batches.attach(target, standard, opt)
+            import("stdlib", {rootdir = path.directory(rule_file)}).attach(target, standard, opt)
+        end
+        import("generation", {rootdir = path.directory(rule_file)}).refresh_dependencies(target)
+        import("testing", {rootdir = path.directory(rule_file)}).discover(target, opt)
     end)
     add_deps("@carven/carven.build")
     add_deps("c++")
-    add_orders("@carven/carven.build", "c++.build")
-    add_orders("@carven/carven.build", "c++.build.pcheader")
-    add_orders("c++", "@carven/carven")
