@@ -98,7 +98,7 @@ rule("carven.build")
                 local sourcefile_cpp = path.relative(path.join(live_root, input.implementation), os.projectdir())
                 if path.unix(path.absolute(sourcefile_cv, os.projectdir()))
                     :startswith(path.unix(installed_sources) .. "/") then
-                    raise("carven: installed standard source is already owned by the shared library build: "
+                    raise("carven: installed standard source is already managed by the Carven rule: "
                         .. sourcefile_cv)
                 end
                 table.insert(sources, sourcefile_cv)
@@ -109,20 +109,23 @@ rule("carven.build")
                 native_config.rules = nil
                 native_config.sourcekind = nil
                 native_config.always_added = true
-                target:add("files", sourcefile_cpp, native_config)
+                target:extraconf_set("files", sourcefile_cpp, native_config)
                 table.insert(generated_files, sourcefile_cpp)
             end
-        end
-        if #sources > 0 then
-            target:add("includedirs", live_root, {public = true})
         end
         if tests == true and #sources > 0 then
             local entry = path.relative(
                 path.join(live_root, "carven", "generated", "carven-test-main.cpp"),
                 os.projectdir()
             )
-            target:add("files", entry, {always_added = true})
+            target:extraconf_set("files", entry, {always_added = true})
             table.insert(generated_files, entry)
+        end
+        if #sources > 0 then
+            -- Publish the source set once: adding each implementation separately
+            -- invalidates Xmake's complete file configuration on every input.
+            target:add("files", generated_files)
+            target:add("includedirs", live_root, {public = true})
         end
         table.sort(sources)
         table.sort(arguments)

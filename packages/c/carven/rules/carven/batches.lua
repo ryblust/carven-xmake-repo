@@ -58,7 +58,10 @@ end
 function generate(target, jobgraph)
     local request = invocation(target)
     if not request then return end
-    add_job(target, jobgraph, {target:data("carven.batch_target")}, function (target, opt)
+    local dependencies = {target:data("carven.batch_target")}
+    local standard = target:data("carven.standard_target")
+    if standard then table.insert(dependencies, standard) end
+    add_job(target, jobgraph, dependencies, function (target, opt)
         generation.generate(target, request, opt)
     end)
 end
@@ -127,6 +130,7 @@ local function producer(consumer, sources, arguments, dependencies, opt)
     node:extraconf_set("prepare", {jobgraph = true})
     node:data_set("carven.program", program)
     node:data_set("carven.sources", sources)
+    node:data_set("carven.progress_label", generation.source_label(sources))
     node:data_set("carven.source_arguments", arguments)
     node:data_set("carven.timings", consumer:data("carven.timings"))
     node:data_set("carven.batch_root",
@@ -149,7 +153,9 @@ function standard(target, opt)
         table.insert(arguments, "--source=" .. input.module .. "=" .. input.path)
     end
     table.sort(arguments)
-    return producer(target, sources, arguments, {}, opt)
+    local node = producer(target, sources, arguments, {}, opt)
+    node:data_set("carven.progress_label", "Carven standard library")
+    return node
 end
 
 function attach(target, standard, opt)

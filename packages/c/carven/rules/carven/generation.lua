@@ -11,18 +11,28 @@ end
 
 -- Reconfigure rule-owned inputs and edges when Xmake clones a target.
 function reset(target)
-    local generated = target:data("carven.generated_files") or {}
+    local generated = table.join(target:data("carven.generated_files") or {},
+        target:data("carven.standard_files") or {})
     if #generated > 0 then target:set("files", without_paths(target:get("files"), generated)) end
-    local root = target:data("carven.generated_root")
-    if root then target:set("includedirs", without_paths(target:get("includedirs"), {root})) end
-    local batch, stdlib = target:data("carven.batch_target"), target:data("carven.stdlib_target")
-    if batch or stdlib then
+    local roots = table.join(table.wrap(target:data("carven.generated_root")),
+        table.wrap(target:data("carven.standard_root")))
+    if #roots > 0 then target:set("includedirs", without_paths(target:get("includedirs"), roots)) end
+    local batch, standard = target:data("carven.batch_target"), target:data("carven.standard_target")
+    if batch or standard then
         local dependencies = table.copy(table.wrap(target:get("deps")))
-        table.remove_if(dependencies, function (_, name) return name == batch or name == stdlib end)
+        table.remove_if(dependencies, function (_, name) return name == batch or name == standard end)
         target:set("deps", dependencies)
         target:data_set("carven.batch_target", nil)
-        target:data_set("carven.stdlib_target", nil)
+        target:data_set("carven.standard_target", nil)
     end
+    target:data_set("carven.standard_files", nil)
+    target:data_set("carven.standard_root", nil)
+end
+
+function source_label(sources)
+    local label = path.relative(sources[1], os.projectdir())
+    if #sources > 1 then label = label .. " (+" .. (#sources - 1) .. " files)" end
+    return label
 end
 
 function source_input(sourcefile, installed_sources, projectdir)
@@ -138,11 +148,13 @@ function run(program, argv, timings, label)
     }
 end
 
--- Each consumer owns its native realization of the shared checked program.
+-- Publish semantic artifacts or generated C++; Xmake owns native compilation.
 function generate(target, request, opt)
     local option = import("core.base.option")
     local depend = import("core.project.depend")
     local progress = import("utils.progress")
+    local shared_label = target:data("carven.progress_label")
+    local label = shared_label or source_label(target:data("carven.sources"))
     if option.get("dry-run") then
         print(os.args(table.join(request.program, request.argv)))
         return
@@ -158,14 +170,21 @@ function generate(target, request, opt)
     end
     table.insert(files, manifest)
     depend.on_changed(function ()
-        progress.set_target(opt.progress, target)
-        progress.show(opt.progress or 0, request.analysis and "${color.build.object}compiling.cv %s"
-            or "${color.build.object}generating.cpp %s", target:name())
+        -- Shared producers have internal names; keep those out of user-facing progress.
+        if shared_label then
+            if type(opt.progress) == "table" and opt.progress.set then
+                opt.progress:set("target_name", nil)
+            end
+        else
+            progress.set_target(opt.progress, target)
+        end
+        progress.show(opt.progress or 0, request.analysis and "${color.build.object}checking.cv %s"
+            or "${color.build.object}generating.cpp %s", label)
         try {
             function ()
                 os.tryrm(request.staging)
                 os.mkdir(request.staging)
-                run(request.program, request.argv, request.timings, target:fullname())
+                run(request.program, request.argv, request.timings, label)
                 local facts = read_manifest(path.join(request.staging, "carven", "manifest.json"))
                 local paths = {}
                 for _, artifact in ipairs(facts.artifacts) do table.insert(paths, artifact.path) end
