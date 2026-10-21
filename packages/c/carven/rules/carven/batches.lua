@@ -63,6 +63,9 @@ function generate(target, jobgraph)
     if standard then table.insert(dependencies, standard) end
     add_job(target, jobgraph, dependencies, function (target, opt)
         generation.generate(target, request, opt)
+        if target:data("carven.standard_target") then
+            import("stdlib", {rootdir = directory}).select_implementations(target)
+        end
     end)
 end
 
@@ -150,7 +153,7 @@ function standard(target, opt)
     local arguments = {}
     for _, source in ipairs(sources) do
         local input = generation.source_input(source, target:data("carven.installed_sources"), os.projectdir())
-        table.insert(arguments, "--source=" .. input.module .. "=" .. input.path)
+        table.insert(arguments, input.path)
     end
     table.sort(arguments)
     local node = producer(target, sources, arguments, {}, opt)

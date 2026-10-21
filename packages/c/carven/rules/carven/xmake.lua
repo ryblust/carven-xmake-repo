@@ -58,7 +58,7 @@ rule("carven.build")
         carven_program = path.absolute(carven_program, os.projectdir())
 
         target:data_set("carven.program", carven_program)
-        local installed_sources = path.join(craftsdir, "carven")
+        local installed_sources = generation.physical_path(path.join(craftsdir, "carven"))
         target:data_set("carven.installed_sources", installed_sources)
         local project_crafts = path.join(os.projectdir(), "crafts")
         local standard_sources = generation.inventory(installed_sources).cv
@@ -77,8 +77,7 @@ rule("carven.build")
         local craft_files = {}
         for _, extension in ipairs({"cv", "cpp"}) do
             for _, source in ipairs(generation.inventory(project_crafts)[extension]) do
-                local installed = path.unix(path.absolute(source, os.projectdir()))
-                    :startswith(path.unix(installed_sources) .. "/")
+                local installed = generation.physical_path(source):startswith(installed_sources .. "/")
                 if not installed then
                     table.insert(craft_files, source)
                 end
@@ -93,11 +92,10 @@ rule("carven.build")
             if path.extension(sourcefile_cv) == ".cv" then
                 local source_config = target:fileconfig(sourcefile_cv) or {}
                 local input = generation.source_input(sourcefile_cv, installed_sources, os.projectdir())
-                table.insert(arguments, "--source=" .. input.module .. "=" .. input.path)
+                table.insert(arguments, input.path)
                 -- Register generated implementations before native scanning.
                 local sourcefile_cpp = path.relative(path.join(live_root, input.implementation), os.projectdir())
-                if path.unix(path.absolute(sourcefile_cv, os.projectdir()))
-                    :startswith(path.unix(installed_sources) .. "/") then
+                if generation.physical_path(sourcefile_cv):startswith(installed_sources .. "/") then
                     raise("carven: installed standard source is already managed by the Carven rule: "
                         .. sourcefile_cv)
                 end

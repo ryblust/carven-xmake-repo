@@ -49,14 +49,7 @@ end
 function attach(target, standard, opt)
     local sources = source_producer(target, standard, opt)
     local root = sources:data("carven.generated_root")
-    local files = {}
-    for _, source in ipairs(target:data("carven.standard_sources")) do
-        local input = generation.source_input(source, target:data("carven.installed_sources"), os.projectdir())
-        local implementation = path.join(root, input.implementation)
-        target:extraconf_set("files", implementation, {always_added = true})
-        table.insert(files, implementation)
-    end
-    table.join2(files, generation.inventory(target:data("carven.installed_sources")).cpp)
+    local files = table.copy(generation.inventory(target:data("carven.installed_sources")).cpp)
     target:add("files", files)
     target:add("includedirs", root, {public = true})
     if target:is_plat("windows", "mingw") then
@@ -66,4 +59,46 @@ function attach(target, standard, opt)
     target:data_set("carven.standard_target", sources:fullname())
     target:data_set("carven.standard_files", files)
     target:data_set("carven.standard_root", root)
+end
+
+-- A consumer owns its source implementations. Published C++ interfaces are also
+-- callable roots: their callers can live outside the generated Carven program.
+function select_implementations(target)
+    local option = import("core.base.option")
+    if option.get("dry-run") then return end
+    local standard_root = target:data("carven.standard_root")
+    local graph, roots = {}, {}
+    for _, root in ipairs({standard_root, target:data("carven.generated_root")}) do
+        local standard = root == standard_root
+        local manifest = generation.read_manifest(path.join(root, "carven", "manifest.json"))
+        for _, artifact in ipairs(manifest.artifacts) do
+            if artifact.role == "module-implementation" or artifact.role == "test-entry" then
+                assert(not graph[artifact.path], "carven: duplicate implementation: " .. artifact.path)
+                graph[artifact.path] = {file = path.join(root, artifact.path),
+                    dependencies = artifact.link_dependencies, standard = standard}
+                if not standard then table.insert(roots, artifact.path) end
+            elseif standard and artifact.role == "cpp-api-header" then
+                table.join2(roots, artifact.link_dependencies)
+            end
+        end
+    end
+    local files = table.copy(generation.inventory(target:data("carven.installed_sources")).cpp)
+    local seen, next_root = {}, 1
+    while next_root <= #roots do
+        local name = roots[next_root]
+        next_root = next_root + 1
+        if not seen[name] then
+            seen[name] = true
+            local implementation = assert(graph[name], "carven: missing implementation: " .. name)
+            if implementation.standard then
+                target:extraconf_set("files", implementation.file, {always_added = true})
+                table.insert(files, implementation.file)
+            end
+            table.join2(roots, implementation.dependencies)
+        end
+    end
+    table.sort(files)
+    target:set("files", generation.without_paths(target:get("files"), target:data("carven.standard_files")))
+    target:add("files", files)
+    target:data_set("carven.standard_files", files)
 end

@@ -1,6 +1,6 @@
 import("core.base.json")
 
-local function without_paths(values, removed)
+function without_paths(values, removed)
     local paths, kept = {}, {}
     for _, value in ipairs(removed) do paths[path.absolute(value, os.projectdir())] = true end
     for _, value in ipairs(table.wrap(values)) do
@@ -35,20 +35,37 @@ function source_label(sources)
     return label
 end
 
+function physical_path(filename)
+    local absolute = path.absolute(filename)
+    assert(os.exists(absolute), "carven: cannot resolve source path: " .. absolute)
+    local parent = path.directory(absolute)
+    if not parent or parent == absolute then return path.unix(absolute) end
+    local resolved = path.join(physical_path(parent), path.filename(absolute))
+    if os.islink(resolved) then
+        return physical_path(path.absolute(os.readlink(resolved), path.directory(resolved)))
+    end
+    return path.unix(resolved)
+end
+
 function source_input(sourcefile, installed_sources, projectdir)
-    local physical = path.unix(path.absolute(sourcefile, projectdir))
-    local argument = path.unix(path.relative(physical, projectdir))
-    local prefix = path.unix(installed_sources) .. "/"
+    local source = path.unix(path.absolute(sourcefile, projectdir))
+    local physical = physical_path(source)
+    local argument = path.unix(path.relative(physical, physical_path(projectdir)))
+    local prefix = physical_path(installed_sources) .. "/"
     local logical
-    if physical:startswith(prefix) then
+    if source:startswith(prefix) then
+        logical = "crafts/carven/" .. source:sub(#prefix + 1)
+        argument = source
+    elseif physical:startswith(prefix) then
         logical = "crafts/carven/" .. physical:sub(#prefix + 1)
+        argument = physical
     elseif not path.is_absolute(argument) and argument ~= ".." and not argument:startswith("../") then
         logical = argument
     else
         raise("carven: source path is outside the project and crafts: " .. tostring(sourcefile))
     end
     local module = logical:sub(1, -4):gsub("/", ".")
-    return {path = argument, module = module, implementation = module:gsub("%.", "/") .. ".cpp"}
+    return {path = argument, implementation = module:gsub("%.", "/") .. ".cpp"}
 end
 
 -- Share input reads within one build, but hash fresh bytes in each new process.
